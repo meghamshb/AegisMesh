@@ -68,6 +68,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if blocked, reason := IsBlockedUpstream(parsed.Host); blocked {
+		h.logger.Warn("blocked internal upstream",
+			"host", parsed.Host,
+			"port", parsed.Port,
+			"reason", reason,
+		)
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error":  "egress to internal destination blocked",
+			"detail": reason,
+		})
+		return
+	}
+
 	decision, recorded, err := h.egress.RecordOutbound(r.Context(), h.resolveIdentity(r), policy.Request{
 		Method: parsed.Method,
 		Host:   parsed.Host,

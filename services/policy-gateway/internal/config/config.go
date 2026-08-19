@@ -11,7 +11,7 @@ import (
 const (
 	defaultListenAddr    = ":8080"
 	defaultServiceName   = "policy-gateway"
-	defaultServiceVer    = "0.5.0-phase35"
+	defaultServiceVer    = "0.6.1-phase4"
 	defaultPostgresDSN   = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
 	defaultReadTimeout   = 15 * time.Second
 	defaultWriteTimeout  = 15 * time.Second

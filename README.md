@@ -17,7 +17,7 @@ Hermes Policy Gateway — an egress policy gateway and approval web UI so Hermes
 | 3 Org rules | **Done** | Approve + remember for org; auto-approve with `rule_id` |
 | 3.5 Policy hardening | **Done** | POST rules, expires_at, cross-agent identity headers |
 | 3.6 UI polish | **Done** | Utilitarian React console (internal-system wireframe style) |
-| 4 Hermes + lockdown | **Not started** | Hermes stub only |
+| 4 Hermes + lockdown | **Done** | Real Hermes agent; terminal-tool egress smoke (REST approve in CI) |
 | 5 Hardening | **Not started** | SSO, TLS, export |
 
 Full acceptance criteria: [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md).
@@ -59,7 +59,7 @@ If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver 
 | Service | Path | Responsibility |
 |---------|------|----------------|
 | `policy-gateway` | `services/policy-gateway/` | HTTP(S) proxy, REST API, embedded approval UI at `/ui` |
-| `hermes` | `services/hermes/` | Agent runtime stub (real Hermes image in phase 4) |
+| `hermes` | `services/hermes/` | Hermes Agent runtime (NousResearch); tool egress via gateway |
 | `postgres` | `deploy/postgres/init/` | Schema bootstrap |
 
 ## Branch workflow
@@ -75,7 +75,7 @@ If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver 
 
 See the spec for full acceptance criteria and open items.
 
-**Next priority:** Phase 4 — real Hermes container + network lockdown. Optional before corp pilot: Phase 3.6 inbox UI polish.
+**Next priority:** Phase 5 — SSO, TLS, audit export, multi-tenant hardening.
 
 ## Development
 

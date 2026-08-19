@@ -182,4 +182,75 @@ if ! api_curl "http://localhost:8080/api/v1/requests?status=auto_approved&agent_
 fi
 echo "PASS: cross-agent org rule auto-approval"
 
-echo "Phase 2, Phase 3, and Phase 3.5 smoke checks passed"
+echo "Checking real Hermes install (Phase 4)..."
+if ! docker compose exec -T hermes sh -c 'command -v hermes >/dev/null && python -c "from tools.terminal_tool import terminal_tool"'; then
+  echo "FAIL: Hermes agent runtime is not installed in the hermes container" >&2
+  exit 1
+fi
+echo "PASS: Hermes CLI and terminal tool available"
+
+echo "Checking Hermes terminal tool triggers pending egress..."
+set +e
+docker compose exec -T hermes python /app/scripts/hermes-terminal-fetch.py https://icanhazip.com >/tmp/phase4-terminal-blocked.log 2>&1
+phase4_blocked_rc=$?
+set -e
+if [ "$phase4_blocked_rc" -eq 0 ]; then
+  echo "FAIL: Hermes terminal tool fetch should exit non-zero before approval" >&2
+  cat /tmp/phase4-terminal-blocked.log >&2
+  exit 1
+fi
+if grep -q 'http_code=200' /tmp/phase4-terminal-blocked.log; then
+  echo "FAIL: Hermes terminal tool fetch should be blocked before approval" >&2
+  cat /tmp/phase4-terminal-blocked.log >&2
+  exit 1
+fi
+if ! api_curl "http://localhost:8080/api/v1/requests?status=pending" | grep -q '"host":"icanhazip.com"'; then
+  echo "FAIL: Hermes terminal tool fetch did not create pending row for icanhazip.com" >&2
+  cat /tmp/phase4-terminal-blocked.log >&2
+  exit 1
+fi
+phase4_request_id="$(api_curl "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="icanhazip.com"]; print(items[-1]["id"] if items else "")')"
+if [ -z "$phase4_request_id" ]; then
+  echo "FAIL: could not find pending request for icanhazip.com" >&2
+  exit 1
+fi
+api_curl -X POST "http://localhost:8080/api/v1/requests/${phase4_request_id}/approve" \
+  -H 'Content-Type: application/json' \
+  -d '{}' | grep -q '"status":"approved"'
+phase4_body="$(docker compose exec -T hermes python /app/scripts/hermes-terminal-fetch.py https://icanhazip.com 2>/tmp/phase4-terminal-retry.log)"
+if [ -z "$phase4_body" ]; then
+  echo "FAIL: Hermes terminal tool retry failed after approve-once" >&2
+  cat /tmp/phase4-terminal-retry.log >&2
+  exit 1
+fi
+if ! echo "$phase4_body" | grep -q 'http_code=200'; then
+  echo "FAIL: expected http_code=200 after approval, got: $phase4_body" >&2
+  cat /tmp/phase4-terminal-retry.log >&2
+  exit 1
+fi
+echo "PASS: Hermes terminal tool egress approved end-to-end"
+
+echo "Checking proxied postgres access is hard-denied (SSRF guard)..."
+postgres_ip="$(docker compose exec -T policy-gateway getent hosts postgres | awk '{print $1; exit}')"
+if [ -z "$postgres_ip" ]; then
+  echo "FAIL: could not resolve postgres IP on policy-gateway" >&2
+  exit 1
+fi
+ssrf_code="$(curl -sS -o /tmp/phase4-ssrf-postgres.body -w '%{http_code}' -x http://localhost:8080 --max-time 5 "http://${postgres_ip}:5432/" 2>/dev/null || true)"
+if [ "$ssrf_code" != "403" ]; then
+  echo "FAIL: proxied postgres IP access should return 403, got ${ssrf_code}" >&2
+  cat /tmp/phase4-ssrf-postgres.body >&2
+  exit 1
+fi
+if ! grep -q 'internal destination blocked' /tmp/phase4-ssrf-postgres.body; then
+  echo "FAIL: expected internal destination blocked message for postgres SSRF" >&2
+  cat /tmp/phase4-ssrf-postgres.body >&2
+  exit 1
+fi
+if api_curl "http://localhost:8080/api/v1/requests?status=pending" | grep -q "\"host\":\"${postgres_ip}\""; then
+  echo "FAIL: internal postgres target should not create pending approval row" >&2
+  exit 1
+fi
+echo "PASS: proxied postgres access blocked without approval queue"
+
+echo "Phase 2, Phase 3, Phase 3.5, and Phase 4 smoke checks passed"

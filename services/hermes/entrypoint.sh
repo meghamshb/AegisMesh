@@ -22,9 +22,24 @@ if [ "$attempt" -gt "$MAX_ATTEMPTS" ]; then
   exit 1
 fi
 
-echo "Hermes stub ready"
+if ! command -v hermes >/dev/null 2>&1; then
+  echo "hermes CLI missing after install" >&2
+  exit 1
+fi
+
+if ! python -c "from tools.terminal_tool import terminal_tool" >/dev/null 2>&1; then
+  echo "hermes terminal tool import failed" >&2
+  exit 1
+fi
+
+if [ -z "${HTTP_PROXY:-}" ] || [ -z "${HTTPS_PROXY:-}" ]; then
+  echo "HTTP_PROXY and HTTPS_PROXY must be set for policy-gated egress" >&2
+  exit 1
+fi
+
+echo "Hermes agent ready (Phase 4)"
 echo "HTTP_PROXY=${HTTP_PROXY:-unset}"
 echo "HTTPS_PROXY=${HTTPS_PROXY:-unset}"
-echo "Phase 0: agent runtime will replace this container in phase 4"
+echo "HERMES_TOOLSETS=${HERMES_TOOLSETS:-unset}"
 
 exec sleep infinity

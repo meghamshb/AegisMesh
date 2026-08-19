@@ -30,7 +30,7 @@ handoff: true
 
 **Conflict resolution:** If the user’s latest message conflicts with **Strategic decisions** or **Non-goals**, follow this file and ask for clarification.
 
-**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.4.0-phase3` (see `GATEWAY_SERVICE_VERSION`).
+**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.6.1-phase4` (see `GATEWAY_SERVICE_VERSION`).
 
 ---
 
@@ -44,7 +44,7 @@ handoff: true
 
 **v1 decision:** Build our gateway first. **Do not fork LAP.** Reference LAP’s Hermes Docker template and inbox UX only.
 
-**Implementation status (2026-08-19):** **Phases 0–3.6 and Phase 3.5 complete.** Runnable stack: `docker compose up --build` + `make smoke`. Policy gateway (Go), Postgres, React approval UI at `/ui`, Hermes **stub** (not real Hermes yet). Org rules, manual rule bootstrap, expires_at, cross-agent org rules (via identity headers), approve-once, deny, audit, and rule revoke are implemented. **Not done:** real Hermes image (Phase 4), production auth/SSO (Phase 5), fleet control plane.
+**Implementation status (2026-08-19):** **Phases 0–4 complete.** Runnable stack: `docker compose up --build` + `make smoke`. Policy gateway (Go), Postgres, React approval UI at `/ui`, **real Hermes agent** in Docker (terminal-tool egress through gateway). Org rules, manual rule bootstrap, expires_at, cross-agent org rules, approve-once, deny, audit, and rule revoke are implemented. **Not done:** production auth/SSO (Phase 5), fleet control plane, separate model egress network (Option B — documented, not wired in Compose yet).
 
 ---
 
@@ -372,7 +372,7 @@ flowchart TB
 | `policy-gateway` | build | 8080 | HTTP(S) proxy, policy eval, REST API, embedded `/ui` |
 | ~~`approval-ui`~~ | — | — | **Merged into `policy-gateway`** for MVP (embedded HTML at `/ui`) |
 | `postgres` | postgres:16 | 5432 | Persistent state |
-| `hermes` | build from Hermes Dockerfile | — | Agent runtime (stub in phases 0–3.5) |
+| `hermes` | build from Hermes Dockerfile | — | NousResearch/hermes-agent runtime (Phase 4+) |
 
 Suggested Docker network: `internal` network where only `policy-gateway` has external egress; `hermes` attached only to internal + gateway path.
 
@@ -658,7 +658,7 @@ Hermes needs LLM access. Options:
 | 3 Org rules | **Done** | Remember-for-org, auto-approve, `rule_id` audit |
 | 3.5 Policy hardening | **Done** | POST rules, expires_at, identity headers, integration tests |
 | 3.6 UI polish | **Done** | Utilitarian internal-system wireframe styling; credentials modal |
-| 4 Hermes + lockdown | **Not started** | Hermes stub only; smoke checks partial network isolation |
+| 4 Hermes + lockdown | **Done** | Real Hermes image; terminal-tool E2E smoke |
 | 5 Hardening | **Not started** | SSO, TLS, export, multi-tenant |
 
 Verify: `make smoke` from repo root (requires running stack).
@@ -668,7 +668,10 @@ Verify: `make smoke` from repo root (requires running stack).
 | Check | Phase |
 |-------|-------|
 | Gateway health + `/ui` served | 0–2 |
-| Hermes cannot reach postgres or public internet directly | 4 (partial) |
+| Hermes cannot reach postgres or public internet directly | 4 |
+| Hermes CLI + terminal tool installed | 4 |
+| Hermes terminal tool → pending → approve-once → fetch succeeds | 4 |
+| Proxied access to `postgres` hard-denied (SSRF guard) | 4 |
 | Proxied HTTPS → pending row persisted | 1 |
 | Approve-once → GitHub API retry succeeds | 2 |
 | Deny → httpbin remains blocked on retry | 2 |
@@ -680,7 +683,7 @@ Smoke uses `GATEWAY_ADMIN_TOKEN` via `api_curl` helper for all control-plane cal
 ### Phase 0 — Scaffold
 
 - [x] Repo / `services/policy-gateway/` directory
-- [x] `docker compose` with postgres + gateway + hermes stub
+- [x] `docker compose` with postgres + gateway + Hermes agent runtime
 - [x] README pointing to this spec
 
 ### Phase 1 — Gateway core
@@ -820,11 +823,12 @@ Purpose: make `/ui` credible for corp reviewers — utilitarian wireframe aesthe
 
 ### Phase 4 — Hermes + network lockdown
 
-- [ ] Hermes Dockerfile from [LAP templates/hermes](https://github.com/LiteLLM-Labs/litellm-agent-control-plane/tree/main/templates/hermes) (real agent, not curl stub)
-- [x] Partial: Docker networks isolate Hermes from postgres and direct internet (`make smoke` network checks)
-- [ ] Hermes web/terminal tool triggers pending request in UI end-to-end
+- [x] Hermes Dockerfile from [LAP templates/hermes](https://github.com/LiteLLM-Labs/litellm-agent-control-plane/tree/main/templates/hermes) pattern (NousResearch/hermes-agent install; not curl stub)
+- [x] Docker networks isolate Hermes from postgres and direct internet (`make smoke` network checks)
+- [x] Hermes **terminal** tool triggers pending request → approve-once → completion (`scripts/hermes-terminal-fetch.py` in smoke)
+- [x] Proxy hard-denies internal upstreams (Postgres hostname, RFC1918, metadata IP) — no approval queue (SSRF guard)
 
-**Acceptance:** End-to-end agent action → UI approval → completion. **Not met.**
+**Acceptance:** Hermes terminal tool → gateway pending → admin approval → retry succeeds. **Passed** for engineering MVP (`make smoke` uses REST approve via admin token, not `/ui` click-through). **Not yet proven:** LLM-driven agent session, `web` toolset egress, UI-automated approval, Option B model egress network.
 
 ### Phase 5 — Hardening (post-MVP)
 
@@ -890,12 +894,12 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 
 ## Next steps for a new agent session
 
-**Current branch:** `feat/phase-2-approval-ui` (Phases 0–3.5 landed here).
+**Current branch:** `feat/phase-4-hermes` (Phases 0–4 landed here).
 
 ### Verify before new work
 
 ```bash
-docker compose down -v && docker compose up --build   # after init SQL changes
+docker compose down -v && docker compose up --build   # Hermes image build is slow first time
 make smoke
 make test   # go test ./... in policy-gateway
 open http://localhost:8080/ui
@@ -905,9 +909,9 @@ Default dev admin token: `dev-local-admin-token` (see `.env.example`).
 
 ### Recommended next work (priority order)
 
-1. **Phase 4 — Hermes + network lockdown** — Replace `services/hermes/` stub with LAP-style Hermes Dockerfile; prove agent tool/web fetch → pending → approve → complete.
-2. **Phase 4 — Hermes + network lockdown** — Replace `services/hermes/` stub with LAP-style Hermes Dockerfile; prove agent tool/web fetch → pending → approve → complete.
-3. **Phase 5 — Hardening** — SSO, TLS, audit export, multi-tenant.
+1. **Phase 4.1 — Pilot demo path** — Option B model egress network in Compose; one LLM-driven task → tool egress → approve in `/ui` → completion; optional `web` tool smoke with provider keys.
+2. **Phase 5 — Hardening** — SSO, TLS, audit export CSV, multi-tenant orgs, persistent org-scoped deny rules.
+3. **Phase 4 supply chain (P1)** — Pin Hermes by commit SHA; slim/cached base image for CI.
 
 ### Do not start with
 
@@ -938,3 +942,4 @@ NemoHermes install, OpenShell gateway, LAP fork, fleet rollout UI, or Portfolio 
 | 2026-08-19 | Added Phase 2.75 inbox hardening scope for internal pilots |
 | 2026-08-19 | **Implementation handoff:** Phases 0–3 complete; Phase 2.5/2.75/3/3.5 status, API table, policy evaluation order, migrations, admin auth, Phase 3.6 UI polish planned |
 | 2026-08-19 | **React approval UI:** Vite app at `services/approval-ui/`, embedded via `go:embed dist/`; Phase 2.5 + 3.6 marked done |
+| 2026-08-19 | **Phase 4 Hermes runtime:** Real NousResearch/hermes-agent Docker image; terminal-tool egress smoke; gateway `0.6.0-phase4` |

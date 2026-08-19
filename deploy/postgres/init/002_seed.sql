@@ -5,5 +5,5 @@ INSERT INTO actors (id, type, org_id, display_name) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO agents (id, actor_id, name, container_id) VALUES
-    ('11111111-1111-1111-1111-111111111020', '11111111-1111-1111-1111-111111111001', 'hermes-stub', 'hermes')
+    ('11111111-1111-1111-1111-111111111020', '11111111-1111-1111-1111-111111111001', 'hermes-agent', 'hermes')
 ON CONFLICT (id) DO NOTHING;
