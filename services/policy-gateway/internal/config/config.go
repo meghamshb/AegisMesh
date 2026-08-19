@@ -10,13 +10,23 @@ import (
 const (
 	defaultListenAddr    = ":8080"
 	defaultServiceName   = "policy-gateway"
-	defaultServiceVer    = "0.1.0-phase0"
+	defaultServiceVer    = "0.2.0-phase1"
 	defaultPostgresDSN   = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
 	defaultReadTimeout   = 15 * time.Second
 	defaultWriteTimeout  = 15 * time.Second
 	defaultIdleTimeout   = 60 * time.Second
 	defaultShutdownGrace = 10 * time.Second
+
+	defaultOrgID   = "11111111-1111-1111-1111-111111111010"
+	defaultUserID  = "11111111-1111-1111-1111-111111111001"
+	defaultAgentID = "11111111-1111-1111-1111-111111111020"
 )
+
+type AgentIdentity struct {
+	OrgID   string
+	UserID  string
+	AgentID string
+}
 
 type Config struct {
 	ListenAddr     string
@@ -28,6 +38,7 @@ type Config struct {
 	IdleTimeout    time.Duration
 	ShutdownGrace  time.Duration
 	ProxyEnabled   bool
+	Identity       AgentIdentity
 }
 
 func Load() (Config, error) {
@@ -47,7 +58,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	proxyEnabled, err := boolEnv("GATEWAY_PROXY_ENABLED", false)
+	proxyEnabled, err := boolEnv("GATEWAY_PROXY_ENABLED", true)
 	if err != nil {
 		return Config{}, err
 	}
@@ -62,10 +73,18 @@ func Load() (Config, error) {
 		IdleTimeout:    idleTimeout,
 		ShutdownGrace:  shutdownGrace,
 		ProxyEnabled:   proxyEnabled,
+		Identity: AgentIdentity{
+			OrgID:   envOrDefault("GATEWAY_ORG_ID", defaultOrgID),
+			UserID:  envOrDefault("GATEWAY_USER_ID", defaultUserID),
+			AgentID: envOrDefault("GATEWAY_AGENT_ID", defaultAgentID),
+		},
 	}
 
 	if cfg.PostgresDSN == "" {
 		return Config{}, fmt.Errorf("POSTGRES_DSN must not be empty")
+	}
+	if cfg.Identity.OrgID == "" || cfg.Identity.UserID == "" || cfg.Identity.AgentID == "" {
+		return Config{}, fmt.Errorf("GATEWAY_ORG_ID, GATEWAY_USER_ID, and GATEWAY_AGENT_ID must not be empty")
 	}
 
 	return cfg, nil

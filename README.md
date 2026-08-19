@@ -7,11 +7,7 @@ Hermes Policy Gateway — an egress policy gateway and approval web UI so Hermes
 
 ## Phase 0 status
 
-Scaffold only:
-
-- `docker compose up --build` runs Postgres, policy-gateway stub, and Hermes stub
-- Gateway exposes `/health` and read-only control-plane list endpoints
-- HTTP(S) proxy, approval workflow, and network lockdown arrive in phases 1–4
+Scaffold complete. Phase 1 adds the HTTP(S) proxy core with default deny + pending persistence.
 
 ## Architecture
 
@@ -27,8 +23,12 @@ Hermes attaches only to the `agent` network. Postgres lives on the `data` networ
 ## Quick start
 
 ```bash
+docker compose down -v   # reset DB when init SQL changes
 docker compose up --build
+make smoke
 ```
+
+If Postgres was already initialized before Phase 1 seed data was added, recreate the volume with `docker compose down -v` before `up`.
 
 Verify health:
 
@@ -57,7 +57,7 @@ curl http://localhost:8080/api/v1/rules
 
 ## MVP phases
 
-See the spec for acceptance criteria. Current target: **Phase 0 complete**, next **Phase 1** (proxy + Postgres logging + default deny).
+See the spec for acceptance criteria. **Phase 1 complete:** proxied requests are blocked by default and persisted as `pending`. Next: **Phase 2** approval UI.
 
 ## Development
 

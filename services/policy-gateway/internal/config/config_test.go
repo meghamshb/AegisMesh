@@ -24,8 +24,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.PostgresDSN != "postgres://example" {
 		t.Fatalf("PostgresDSN = %q", cfg.PostgresDSN)
 	}
-	if cfg.ProxyEnabled {
-		t.Fatal("ProxyEnabled should default to false in phase 0")
+	if cfg.ProxyEnabled != true {
+		t.Fatalf("ProxyEnabled = %v, want true by default in phase 1", cfg.ProxyEnabled)
 	}
 	if cfg.ReadTimeout != 15*time.Second {
 		t.Fatalf("ReadTimeout = %v", cfg.ReadTimeout)

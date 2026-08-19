@@ -12,7 +12,9 @@ import (
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/api"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/policy"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/service"
+	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/store"
 )
 
 type stubStore struct{}
@@ -27,13 +29,25 @@ func (stubStore) ListRules(_ context.Context) ([]domain.PolicyRule, error) {
 	return []domain.PolicyRule{}, nil
 }
 
+func (stubStore) MatchRules(_ context.Context, _ store.MatchRulesInput) ([]domain.PolicyRule, error) {
+	return nil, nil
+}
+
+func (stubStore) CreateEgressRequest(_ context.Context, _ store.CreateEgressRequestInput) (domain.EgressRequest, error) {
+	return domain.EgressRequest{ID: "test-id", Status: domain.RequestStatusPending}, nil
+}
+
+func (stubStore) InsertAuditEvent(_ context.Context, _, _, _ string, _ map[string]any) error {
+	return nil
+}
+
 func TestHealthOK(t *testing.T) {
 	cfg := config.Config{
 		ServiceName:    "policy-gateway",
 		ServiceVersion: "test",
 	}
-	egress := service.NewEgress(stubStore{})
-	srv := api.New(cfg, slog.New(slog.DiscardHandler), stubStore{}, egress)
+	egress := service.NewEgress(stubStore{}, policy.NewRuleEngine(stubStore{}))
+	srv := api.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), stubStore{}, egress)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -54,8 +68,5 @@ func TestHealthOK(t *testing.T) {
 	}
 	if payload.Status != "ok" {
 		t.Fatalf("status = %q, want ok", payload.Status)
-	}
-	if payload.Checks["proxy"] != "disabled" {
-		t.Fatalf("proxy check = %q, want disabled", payload.Checks["proxy"])
 	}
 }

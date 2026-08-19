@@ -1,14 +1,17 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/api"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/policy"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/proxy"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/service"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/store"
@@ -22,11 +25,12 @@ type App struct {
 }
 
 func New(cfg config.Config, logger *slog.Logger, st store.Store) *App {
-	egress := service.NewEgress(st)
+	engine := policy.NewRuleEngine(st)
+	egress := service.NewEgress(st, engine)
 	return &App{
 		cfg:    cfg,
 		logger: logger,
-		proxy:  proxy.New(cfg.ProxyEnabled),
+		proxy:  proxy.NewHandler(cfg.ProxyEnabled, cfg.Identity, egress, logger),
 		api:    api.New(cfg, logger, st, egress),
 	}
 }
@@ -70,6 +74,7 @@ func (a *App) withMiddleware(next http.Handler) http.Handler {
 		a.logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
+			"host", r.Host,
 			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -84,4 +89,17 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(statusCode int) {
 	r.status = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := r.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, errors.New("response writer does not support hijacking")
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }

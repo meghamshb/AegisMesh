@@ -21,4 +21,14 @@ if docker compose exec -T hermes sh -c 'curl -fsS --max-time 5 https://example.c
 fi
 echo "PASS: hermes has no direct internet egress"
 
-echo "Phase 0 smoke checks passed"
+echo "Checking proxied HTTPS request is blocked and persisted..."
+before_count="$(curl -fsS "http://localhost:8080/api/v1/requests?status=pending" | grep -o '"host"' | wc -l | tr -d ' ')"
+docker compose exec -T hermes sh -c 'curl -sS -x http://policy-gateway:8080 --max-time 5 https://example.com >/dev/null' || true
+after_count="$(curl -fsS "http://localhost:8080/api/v1/requests?status=pending" | grep -o '"host":"example.com"' | wc -l | tr -d ' ')"
+if [ "$after_count" -lt 1 ]; then
+  echo "FAIL: proxied request did not create a pending row for example.com" >&2
+  exit 1
+fi
+echo "PASS: proxied request created pending egress row"
+
+echo "Phase 1 smoke checks passed"
