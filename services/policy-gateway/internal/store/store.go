@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/domain"
 )
@@ -52,6 +53,23 @@ type AuditInput struct {
 	Metadata        map[string]any
 }
 
+type CreatePolicyRuleInput struct {
+	OrgID      string
+	Scope      domain.RuleScope
+	ScopeRefID string
+	Effect     domain.RuleEffect
+	Host       string
+	Port       int
+	Method     string
+	PathPrefix string
+	ExpiresAt  *time.Time
+	CreatedBy  string
+}
+
+type OrgRuleOptions struct {
+	ExpiresAt *time.Time
+}
+
 type Store interface {
 	Ping(ctx context.Context) error
 	ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error)
@@ -62,7 +80,8 @@ type Store interface {
 	InsertAuditEvent(ctx context.Context, egressRequestID, eventType, actorID string, metadata map[string]any) error
 	GetEgressRequest(ctx context.Context, id string) (domain.EgressRequest, error)
 	ApproveRequestOnce(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, error)
-	ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error)
+	ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, opts OrgRuleOptions, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error)
+	CreatePolicyRule(ctx context.Context, in CreatePolicyRuleInput, audit AuditInput) (domain.PolicyRule, error)
 	DeletePolicyRule(ctx context.Context, id string, audit AuditInput) error
 	DenyRequest(ctx context.Context, id, decidedBy, feedback string, audit AuditInput) (domain.EgressRequest, error)
 	FindConsumableApproval(ctx context.Context, in ApprovalMatchInput) (*domain.EgressRequest, error)

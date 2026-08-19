@@ -7,10 +7,20 @@ Hermes Policy Gateway — an egress policy gateway and approval web UI so Hermes
 
 ## Phase status
 
-- **Phase 0:** Scaffold complete
-- **Phase 1:** HTTP(S) proxy with default deny + pending persistence
-- **Phase 2:** Approval web UI at `/ui`, approve-once/deny API, one-time grant on retry
-- **Phase 2.75:** Pending-first inbox hardening, minimal admin protection, reviewer attribution, safer approve/deny flow
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 0 Scaffold | **Done** | Compose, Makefile, this README |
+| 1 Gateway core | **Done** | HTTP(S) proxy, default deny, Postgres logging |
+| 2 Approval UI | **Done** | `/ui`, approve-once, deny, consumable retry grant |
+| 2.5 Team inbox | **Done** | React + Vite inbox; master-detail, tabs, filters |
+| 2.75 Pilot hardening | **Done** | Admin token, polling, modals, CONNECT warnings |
+| 3 Org rules | **Done** | Approve + remember for org; auto-approve with `rule_id` |
+| 3.5 Policy hardening | **Done** | POST rules, expires_at, cross-agent identity headers |
+| 3.6 UI polish | **Done** | Utilitarian React console (internal-system wireframe style) |
+| 4 Hermes + lockdown | **Not started** | Hermes stub only |
+| 5 Hardening | **Not started** | SSO, TLS, export |
+
+Full acceptance criteria: [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md).
 
 ## Architecture
 
@@ -48,7 +58,7 @@ If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver 
 
 | Service | Path | Responsibility |
 |---------|------|----------------|
-| `policy-gateway` | `services/policy-gateway/` | Control plane API (proxy in phase 1) |
+| `policy-gateway` | `services/policy-gateway/` | HTTP(S) proxy, REST API, embedded approval UI at `/ui` |
 | `hermes` | `services/hermes/` | Agent runtime stub (real Hermes image in phase 4) |
 | `postgres` | `deploy/postgres/init/` | Schema bootstrap |
 
@@ -63,14 +73,18 @@ If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver 
 
 ## MVP phases
 
-See the spec for acceptance criteria. **Phase 3 complete:** approve-and-remember creates org-scoped allow rules; matching retries auto-approve with `rule_id` audit linkage. **Phase 3.5 (partial):** rule dedup, safe path matching, atomic audit writes, rule revoke, CONNECT remember blocked, admin token required for remember. Next: **Phase 4** Hermes container + network lockdown.
+See the spec for full acceptance criteria and open items.
+
+**Next priority:** Phase 4 — real Hermes container + network lockdown. Optional before corp pilot: Phase 3.6 inbox UI polish.
 
 ## Development
 
 ```bash
-make up      # docker compose up --build
-make smoke   # network isolation checks (requires running stack)
-make test    # go test ./... in policy-gateway
+make ui-build   # build React inbox into gateway embed dir
+make ui-dev     # Vite dev server (proxies API to :8080)
+make up         # docker compose up --build
+make smoke      # network isolation checks (requires running stack)
+make test       # ui-build + go test ./... in policy-gateway
 ```
 
 Environment variables are documented in [`.env.example`](.env.example).
@@ -78,6 +92,7 @@ Environment variables are documented in [`.env.example`](.env.example).
 ## Layout
 
 ```
+services/approval-ui/          React approval inbox (Vite)
 services/policy-gateway/internal/
   api/      control-plane HTTP handlers
   app/      wiring + proxy/api dispatch
@@ -87,5 +102,5 @@ services/policy-gateway/internal/
   proxy/    data-plane handler
   service/  orchestration between API and store
   store/    postgres persistence
-  ui/       embedded approval inbox
+  ui/       embedded React build (dist/)
 ```

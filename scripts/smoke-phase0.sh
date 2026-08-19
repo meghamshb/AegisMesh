@@ -155,4 +155,31 @@ if ! grep -q 'not allowed for CONNECT' /tmp/phase3-connect-remember.body; then
 fi
 echo "PASS: CONNECT remember rejected"
 
-echo "Phase 2 and Phase 3 smoke checks passed"
+echo "Checking POST /api/v1/rules manual bootstrap..."
+manual_code="$(curl -sS -o /tmp/phase35-manual-rule.body -w '%{http_code}' -X POST "http://localhost:8080/api/v1/rules" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":"org","effect":"allow","host":"httpstat.us","port":80,"method":"GET","path_prefix":"/200"}')"
+if [ "$manual_code" != "201" ]; then
+  echo "FAIL: POST /api/v1/rules should return 201, got ${manual_code}" >&2
+  cat /tmp/phase35-manual-rule.body >&2
+  exit 1
+fi
+echo "PASS: manual policy rule created"
+
+echo "Checking second agent auto-approves via org rule..."
+docker compose exec -T postgres psql -U hermes -d hermes_policy -v ON_ERROR_STOP=1 -c \
+  "INSERT INTO actors (id, type, org_id, display_name) VALUES ('11111111-1111-1111-1111-111111111003', 'user', '11111111-1111-1111-1111-111111111010', 'Second User') ON CONFLICT (id) DO NOTHING; INSERT INTO agents (id, actor_id, name, container_id) VALUES ('11111111-1111-1111-1111-111111111021', '11111111-1111-1111-1111-111111111003', 'hermes-agent-2', 'hermes') ON CONFLICT (id) DO NOTHING;"
+AGENT2_ID="11111111-1111-1111-1111-111111111021"
+agent2_body="$(docker compose exec -T hermes sh -c "curl -fsS -x http://policy-gateway:8080 -H 'X-Gateway-Agent-Id: ${AGENT2_ID}' --max-time 15 http://jsonplaceholder.typicode.com/todos/1")"
+if [ -z "$agent2_body" ]; then
+  echo "FAIL: second agent request failed after org rule exists" >&2
+  exit 1
+fi
+if ! api_curl "http://localhost:8080/api/v1/requests?status=auto_approved&agent_id=${AGENT2_ID}" | grep -q '"host":"jsonplaceholder.typicode.com"'; then
+  echo "FAIL: second agent did not get auto_approved via org rule" >&2
+  exit 1
+fi
+echo "PASS: cross-agent org rule auto-approval"
+
+echo "Phase 2, Phase 3, and Phase 3.5 smoke checks passed"

@@ -11,7 +11,7 @@ import (
 const (
 	defaultListenAddr    = ":8080"
 	defaultServiceName   = "policy-gateway"
-	defaultServiceVer    = "0.4.0-phase3"
+	defaultServiceVer    = "0.5.0-phase35"
 	defaultPostgresDSN   = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
 	defaultReadTimeout   = 15 * time.Second
 	defaultWriteTimeout  = 15 * time.Second
@@ -41,9 +41,12 @@ type Config struct {
 	ShutdownGrace  time.Duration
 	ProxyEnabled   bool
 	Identity       AgentIdentity
-	AdminID        string
-	AdminToken     string
-	ApproverHeader string
+	AdminID                string
+	AdminToken             string
+	ApproverHeader         string
+	AllowIdentityOverride  bool
+	AgentIDHeader          string
+	UserIDHeader           string
 }
 
 func Load() (Config, error) {
@@ -83,9 +86,12 @@ func Load() (Config, error) {
 			UserID:  envOrDefault("GATEWAY_USER_ID", defaultUserID),
 			AgentID: envOrDefault("GATEWAY_AGENT_ID", defaultAgentID),
 		},
-		AdminID:        envOrDefault("GATEWAY_ADMIN_ID", defaultAdminID),
-		AdminToken:     strings.TrimSpace(os.Getenv("GATEWAY_ADMIN_TOKEN")),
-		ApproverHeader: envOrDefault("GATEWAY_APPROVER_HEADER", "X-Gateway-Approver"),
+		AdminID:               envOrDefault("GATEWAY_ADMIN_ID", defaultAdminID),
+		AdminToken:            strings.TrimSpace(os.Getenv("GATEWAY_ADMIN_TOKEN")),
+		ApproverHeader:        envOrDefault("GATEWAY_APPROVER_HEADER", "X-Gateway-Approver"),
+		AllowIdentityOverride: boolEnvDefault("GATEWAY_ALLOW_IDENTITY_OVERRIDE", false),
+		AgentIDHeader:         envOrDefault("GATEWAY_AGENT_ID_HEADER", "X-Gateway-Agent-Id"),
+		UserIDHeader:          envOrDefault("GATEWAY_USER_ID_HEADER", "X-Gateway-User-Id"),
 	}
 
 	if cfg.PostgresDSN == "" {
@@ -127,4 +133,12 @@ func boolEnv(key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be true or false: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func boolEnvDefault(key string, fallback bool) bool {
+	parsed, err := boolEnv(key, fallback)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
@@ -14,24 +15,30 @@ import (
 )
 
 type Handler struct {
-	enabled   bool
-	identity  config.AgentIdentity
-	egress    *service.EgressService
-	logger    *slog.Logger
-	transport *http.Transport
+	enabled               bool
+	identity              config.AgentIdentity
+	allowIdentityOverride bool
+	agentIDHeader         string
+	userIDHeader          string
+	egress                *service.EgressService
+	logger                *slog.Logger
+	transport             *http.Transport
 }
 
 func NewHandler(
 	enabled bool,
-	identity config.AgentIdentity,
+	cfg config.Config,
 	egress *service.EgressService,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
-		enabled:  enabled,
-		identity: identity,
-		egress:   egress,
-		logger:   logger,
+		enabled:               enabled,
+		identity:              cfg.Identity,
+		allowIdentityOverride: cfg.AllowIdentityOverride,
+		agentIDHeader:         cfg.AgentIDHeader,
+		userIDHeader:          cfg.UserIDHeader,
+		egress:                egress,
+		logger:                logger,
 		transport: &http.Transport{
 			Proxy: nil,
 			DialContext: (&net.Dialer{
@@ -61,7 +68,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decision, recorded, err := h.egress.RecordOutbound(r.Context(), h.identity, policy.Request{
+	decision, recorded, err := h.egress.RecordOutbound(r.Context(), h.resolveIdentity(r), policy.Request{
 		Method: parsed.Method,
 		Host:   parsed.Host,
 		Port:   parsed.Port,
@@ -94,6 +101,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unknown policy decision"})
 	}
+}
+
+func (h *Handler) resolveIdentity(r *http.Request) config.AgentIdentity {
+	identity := h.identity
+	if !h.allowIdentityOverride {
+		return identity
+	}
+	if agentID := strings.TrimSpace(r.Header.Get(h.agentIDHeader)); agentID != "" {
+		identity.AgentID = agentID
+	}
+	if userID := strings.TrimSpace(r.Header.Get(h.userIDHeader)); userID != "" {
+		identity.UserID = userID
+	}
+	return identity
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, parsed ParsedRequest) {

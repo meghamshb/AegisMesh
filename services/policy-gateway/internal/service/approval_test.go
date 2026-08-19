@@ -43,9 +43,12 @@ func (s *approvalStore) ApproveRequestOnce(_ context.Context, _, _ string, audit
 	s.auditEvents = append(s.auditEvents, audit.EventType)
 	return s.approvedOnce, nil
 }
-func (s *approvalStore) ApproveRequestWithOrgRule(_ context.Context, _, _ string, audit store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (s *approvalStore) ApproveRequestWithOrgRule(_ context.Context, _, _ string, _ store.OrgRuleOptions, audit store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	s.auditEvents = append(s.auditEvents, audit.EventType)
 	return s.approvedWithOrg, s.orgRule, nil
+}
+func (s *approvalStore) CreatePolicyRule(_ context.Context, _ store.CreatePolicyRuleInput, _ store.AuditInput) (domain.PolicyRule, error) {
+	return domain.PolicyRule{}, nil
 }
 func (s *approvalStore) DeletePolicyRule(context.Context, string, store.AuditInput) error { return nil }
 func (s *approvalStore) DenyRequest(context.Context, string, string, string, store.AuditInput) (domain.EgressRequest, error) {
@@ -136,8 +139,11 @@ func (s rememberStore) GetEgressRequest(context.Context, string) (domain.EgressR
 func (rememberStore) ApproveRequestOnce(context.Context, string, string, store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
-func (rememberStore) ApproveRequestWithOrgRule(context.Context, string, string, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (rememberStore) ApproveRequestWithOrgRule(context.Context, string, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	return domain.EgressRequest{}, domain.PolicyRule{}, nil
+}
+func (rememberStore) CreatePolicyRule(context.Context, store.CreatePolicyRuleInput, store.AuditInput) (domain.PolicyRule, error) {
+	return domain.PolicyRule{}, nil
 }
 func (rememberStore) DeletePolicyRule(context.Context, string, store.AuditInput) error { return nil }
 func (rememberStore) DenyRequest(context.Context, string, string, string, store.AuditInput) (domain.EgressRequest, error) {

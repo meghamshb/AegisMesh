@@ -19,7 +19,8 @@ services:
 
   policy-gateway:
     build:
-      context: ./services/policy-gateway
+      context: .
+      dockerfile: services/policy-gateway/Dockerfile
     environment:
       POSTGRES_DSN: postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable
       GATEWAY_LISTEN_ADDR: :8080
@@ -29,6 +30,7 @@ services:
       GATEWAY_AGENT_ID: "11111111-1111-1111-1111-111111111020"
       GATEWAY_ADMIN_ID: "11111111-1111-1111-1111-111111111002"
       GATEWAY_ADMIN_TOKEN: "dev-local-admin-token"
+      GATEWAY_ALLOW_IDENTITY_OVERRIDE: "true"
     ports:
       - "8080:8080"
     depends_on:

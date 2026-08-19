@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -244,7 +245,7 @@ func (p *Postgres) ApproveRequestOnce(ctx context.Context, id, decidedBy string,
 	return req, nil
 }
 
-func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, opts OrgRuleOptions, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return domain.EgressRequest{}, domain.PolicyRule{}, fmt.Errorf("begin transaction: %w", err)
@@ -294,7 +295,7 @@ func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy 
 	}
 
 	var rule domain.PolicyRule
-	rule, err = p.findOrInsertOrgAllowRuleTx(ctx, tx, pending, decidedBy)
+	rule, err = p.findOrInsertOrgAllowRuleTx(ctx, tx, pending, decidedBy, opts.ExpiresAt)
 	if err != nil {
 		return domain.EgressRequest{}, domain.PolicyRule{}, err
 	}
@@ -315,6 +316,9 @@ func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy 
 	audit.Metadata = enrichRequestAuditMetadata(audit.Metadata, approved)
 	audit.Metadata["rule_id"] = rule.ID
 	audit.Metadata["path_prefix"] = rule.PathPrefix
+	if rule.ExpiresAt != nil {
+		audit.Metadata["expires_at"] = rule.ExpiresAt.UTC().Format(time.RFC3339)
+	}
 
 	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
 		return domain.EgressRequest{}, domain.PolicyRule{}, err
@@ -403,19 +407,81 @@ func enrichRequestAuditMetadata(metadata map[string]any, req domain.EgressReques
 	return metadata
 }
 
-func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pending domain.EgressRequest, decidedBy string) (domain.PolicyRule, error) {
+func (p *Postgres) CreatePolicyRule(ctx context.Context, in CreatePolicyRuleInput, audit AuditInput) (domain.PolicyRule, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.PolicyRule{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rule, inserted, err := p.insertPolicyRuleTx(ctx, tx, in)
+	if err != nil {
+		return domain.PolicyRule{}, err
+	}
+	if !inserted {
+		return domain.PolicyRule{}, domain.ErrRuleAlreadyExists{
+			Host:       in.Host,
+			Port:       in.Port,
+			Method:     in.Method,
+			PathPrefix: in.PathPrefix,
+		}
+	}
+
+	audit.Metadata = enrichRuleAuditMetadata(audit.Metadata, rule)
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return domain.PolicyRule{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.PolicyRule{}, fmt.Errorf("commit create policy rule: %w", err)
+	}
+	return rule, nil
+}
+
+func enrichRuleAuditMetadata(metadata map[string]any, rule domain.PolicyRule) map[string]any {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["rule_id"] = rule.ID
+	metadata["host"] = rule.Host
+	metadata["port"] = rule.Port
+	metadata["method"] = rule.Method
+	metadata["path_prefix"] = rule.PathPrefix
+	metadata["scope"] = rule.Scope
+	metadata["effect"] = rule.Effect
+	return metadata
+}
+
+func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pending domain.EgressRequest, decidedBy string, expiresAt *time.Time) (domain.PolicyRule, error) {
+	in := CreatePolicyRuleInput{
+		OrgID:      pending.OrgID,
+		Scope:      domain.RuleScopeOrg,
+		ScopeRefID: pending.OrgID,
+		Effect:     domain.RuleEffectAllow,
+		Host:       pending.Host,
+		Port:       pending.Port,
+		Method:     pending.Method,
+		PathPrefix: pending.Path,
+		ExpiresAt:  expiresAt,
+		CreatedBy:  decidedBy,
+	}
+	rule, _, err := p.insertPolicyRuleTx(ctx, tx, in)
+	return rule, err
+}
+
+func (p *Postgres) insertPolicyRuleTx(ctx context.Context, tx pgx.Tx, in CreatePolicyRuleInput) (domain.PolicyRule, bool, error) {
 	var rule domain.PolicyRule
 	var scope string
 	var effect string
 	err := tx.QueryRow(ctx, `
 		INSERT INTO policy_rules (
-			org_id, scope, scope_ref_id, effect, host, port, method, path_prefix, created_by
-		) VALUES ($1, 'org', $1, 'allow', $2, $3, $4, $5, $6)
+			org_id, scope, scope_ref_id, effect, host, port, method, path_prefix, created_by, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (org_id, scope, scope_ref_id, effect, host, port, method, path_prefix)
 		DO NOTHING
 		RETURNING id, org_id, scope, scope_ref_id, effect, host, port, method,
 		          path_prefix, created_at, created_by, expires_at
-	`, pending.OrgID, pending.Host, pending.Port, pending.Method, pending.Path, decidedBy).Scan(
+	`, in.OrgID, string(in.Scope), in.ScopeRefID, string(in.Effect), in.Host, in.Port, in.Method, in.PathPrefix, in.CreatedBy, in.ExpiresAt).Scan(
 		&rule.ID,
 		&rule.OrgID,
 		&scope,
@@ -430,10 +496,11 @@ func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pe
 		&rule.ExpiresAt,
 	)
 	if err == nil {
-		return finishPolicyRuleScan(rule, scope, effect)
+		finished, finishErr := finishPolicyRuleScan(rule, scope, effect)
+		return finished, true, finishErr
 	}
 	if !isNoRows(err) {
-		return domain.PolicyRule{}, fmt.Errorf("insert org allow rule: %w", err)
+		return domain.PolicyRule{}, false, fmt.Errorf("insert policy rule: %w", err)
 	}
 
 	row := tx.QueryRow(ctx, `
@@ -441,14 +508,14 @@ func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pe
 		       path_prefix, created_at, created_by, expires_at
 		FROM policy_rules
 		WHERE org_id = $1
-		  AND scope = 'org'
-		  AND scope_ref_id = $1
-		  AND effect = 'allow'
-		  AND host = $2
-		  AND port = $3
-		  AND method = $4
-		  AND path_prefix = $5
-	`, pending.OrgID, pending.Host, pending.Port, pending.Method, pending.Path)
+		  AND scope = $2
+		  AND scope_ref_id = $3
+		  AND effect = $4
+		  AND host = $5
+		  AND port = $6
+		  AND method = $7
+		  AND path_prefix = $8
+	`, in.OrgID, string(in.Scope), in.ScopeRefID, string(in.Effect), in.Host, in.Port, in.Method, in.PathPrefix)
 
 	if err := row.Scan(
 		&rule.ID,
@@ -464,9 +531,10 @@ func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pe
 		&rule.CreatedBy,
 		&rule.ExpiresAt,
 	); err != nil {
-		return domain.PolicyRule{}, fmt.Errorf("load existing org allow rule: %w", err)
+		return domain.PolicyRule{}, false, fmt.Errorf("load existing policy rule: %w", err)
 	}
-	return finishPolicyRuleScan(rule, scope, effect)
+	finished, finishErr := finishPolicyRuleScan(rule, scope, effect)
+	return finished, false, finishErr
 }
 
 func finishPolicyRuleScan(rule domain.PolicyRule, scope, effect string) (domain.PolicyRule, error) {

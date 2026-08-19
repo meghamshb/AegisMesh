@@ -1,8 +1,11 @@
 package domain
 
+import "time"
+
 type ApproveRequestBody struct {
-	Remember bool       `json:"remember"`
-	Scope    RuleScope  `json:"scope"`
+	Remember  bool       `json:"remember"`
+	Scope     RuleScope  `json:"scope"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type DenyRequestBody struct {

@@ -32,8 +32,13 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 		if pending.Method == "CONNECT" {
 			return domain.EgressRequest{}, domain.ErrRememberCONNECTNotAllowed{Host: pending.Host}
 		}
+		if err := validateExpiresAt(body.ExpiresAt); err != nil {
+			return domain.EgressRequest{}, err
+		}
 
-		approved, _, err := s.store.ApproveRequestWithOrgRule(ctx, requestID, adminID, store.AuditInput{
+		approved, _, err := s.store.ApproveRequestWithOrgRule(ctx, requestID, adminID, store.OrgRuleOptions{
+			ExpiresAt: body.ExpiresAt,
+		}, store.AuditInput{
 			EgressRequestID: requestID,
 			EventType:       "egress_approved_org_rule",
 			ActorID:         adminID,

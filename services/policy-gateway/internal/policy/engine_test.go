@@ -36,8 +36,12 @@ func (s stubStore) GetEgressRequest(context.Context, string) (domain.EgressReque
 func (s stubStore) ApproveRequestOnce(context.Context, string, string, store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
-func (s stubStore) ApproveRequestWithOrgRule(context.Context, string, string, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (s stubStore) ApproveRequestWithOrgRule(context.Context, string, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	return domain.EgressRequest{}, domain.PolicyRule{}, nil
+}
+
+func (s stubStore) CreatePolicyRule(context.Context, store.CreatePolicyRuleInput, store.AuditInput) (domain.PolicyRule, error) {
+	return domain.PolicyRule{}, nil
 }
 func (s stubStore) DeletePolicyRule(context.Context, string, store.AuditInput) error { return nil }
 func (s stubStore) DenyRequest(context.Context, string, string, string, store.AuditInput) (domain.EgressRequest, error) {

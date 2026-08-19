@@ -5,6 +5,7 @@ status: approved-direction
 audience: coding-agent
 created: 2026-08-19
 updated: 2026-08-19
+implementation_through: phase-3.5
 handoff: true
 ---
 
@@ -29,7 +30,7 @@ handoff: true
 
 **Conflict resolution:** If the user’s latest message conflicts with **Strategic decisions** or **Non-goals**, follow this file and ask for clarification.
 
-**Repo note:** Spec currently lives at `docs/specs/hermes-policy-gateway.md` in the Portfolio Website repo. Implementation should eventually move to its **own repo** or `services/policy-gateway/` — nothing is built yet.
+**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.4.0-phase3` (see `GATEWAY_SERVICE_VERSION`).
 
 ---
 
@@ -43,7 +44,7 @@ handoff: true
 
 **v1 decision:** Build our gateway first. **Do not fork LAP.** Reference LAP’s Hermes Docker template and inbox UX only.
 
-**Implementation status:** **Spec only.** No services, no code scaffold, no running stack.
+**Implementation status (2026-08-19):** **Phases 0–3.6 and Phase 3.5 complete.** Runnable stack: `docker compose up --build` + `make smoke`. Policy gateway (Go), Postgres, React approval UI at `/ui`, Hermes **stub** (not real Hermes yet). Org rules, manual rule bootstrap, expires_at, cross-agent org rules (via identity headers), approve-once, deny, audit, and rule revoke are implemented. **Not done:** real Hermes image (Phase 4), production auth/SSO (Phase 5), fleet control plane.
 
 ---
 
@@ -356,24 +357,22 @@ sequenceDiagram
 ```mermaid
 flowchart TB
   subgraph compose["docker compose"]
-    pg["policy-gateway:8080"]
-    ui["approval-ui\n(merge into pg for MVP)"]
+    pg["policy-gateway:8080\n(proxy + REST + /ui)"]
     db[("postgres")]
     hermes["hermes"]
   end
 
   pg --- db
-  ui --- pg
   hermes -->|"HTTP_PROXY / HTTPS_PROXY"| pg
   hermes -->|"volumes"| vol["host mounts only"]
 ```
 
-| Service | Image (TBD) | Ports | Responsibility |
-|---------|-------------|-------|----------------|
-| `policy-gateway` | build | 8080 | HTTP(S) proxy, policy eval, REST API |
-| `approval-ui` | build or static | 3000 | Web inbox (may merge into gateway process for MVP) |
+| Service | Image | Ports | Responsibility |
+|---------|-------|-------|----------------|
+| `policy-gateway` | build | 8080 | HTTP(S) proxy, policy eval, REST API, embedded `/ui` |
+| ~~`approval-ui`~~ | — | — | **Merged into `policy-gateway`** for MVP (embedded HTML at `/ui`) |
 | `postgres` | postgres:16 | 5432 | Persistent state |
-| `hermes` | build from Hermes Dockerfile | — | Agent runtime |
+| `hermes` | build from Hermes Dockerfile | — | Agent runtime (stub in phases 0–3.5) |
 
 Suggested Docker network: `internal` network where only `policy-gateway` has external egress; `hermes` attached only to internal + gateway path.
 
@@ -412,7 +411,7 @@ Do not assume LAP tool approvals substitute for network approvals.
 | LLM routing | Out of scope v1 (optional separate path) | Built-in `/v1/messages` |
 | Deploy | Compose: gateway + UI + DB + hermes | Compose: lap + postgres + optional profiles |
 | Fork? | N/A — we build greenfield | **Do not fork for v1** |
-| Repo | TBD new repo | github.com/LiteLLM-Labs/litellm-agent-control-plane |
+| Repo | [ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents) | github.com/LiteLLM-Labs/litellm-agent-control-plane |
 
 **Borrow from LAP without forking:**
 
@@ -450,15 +449,27 @@ Do not assume LAP tool approvals substitute for network approvals.
 
 Audit-only mode (log but allow) may exist for dev — not default for corp story.
 
-### Evaluation order (first match wins)
+### Evaluation order (implemented in `internal/policy/engine.go`)
 
-1. **Deny rule** matches → block, log `denied`, stop.
-2. **Allow rule** matches → forward, log `auto-approved`, attach `rule_id`.
-3. No match → create **pending** record, block request, surface in UI.
-4. Human **approve once** → forward this request only.
-5. Human **approve + remember** → forward + create allow rule at chosen scope.
-6. Human **deny** → block, log `denied`, optionally create deny rule.
-7. **Timeout** (if configured) → deny pending requests.
+1. **`policy_rules` deny** matches (org / user / agent scope) → block, log `denied`, attach `rule_id`.
+2. **Agent standing deny** — prior `denied` egress row for same agent + exact host/port/method/path → block (wins over org allow rules).
+3. **`policy_rules` allow** matches → forward, log `auto_approved`, attach `rule_id`.
+4. **Consumable approve-once** — prior `approved` row with matching pattern and `consumed_at IS NULL` → forward once, consume grant.
+5. No match → create **`pending`** record, block request, surface in UI.
+6. Human **approve once** → status `approved`; client retries; step 4 applies.
+7. Human **approve + remember** (`remember: true`, `scope: org`) → create org allow rule + status `approved`; future matching traffic hits step 3.
+8. Human **deny** → standing agent-scoped deny via egress row (not yet a persistent `policy_rules` deny row).
+9. **Timeout** (if configured) → deny pending requests — **not implemented**.
+
+Path matching uses `starts_with(path, path_prefix)` with a `/` boundary check (not SQL `LIKE`, avoids `_` wildcard bugs).
+
+#### Phase 3 remember constraints (implemented)
+
+- **`scope: org` only** — `user` / `agent` remember rejected with 400.
+- **`remember=true` requires `GATEWAY_ADMIN_TOKEN`** — open API cannot mint org rules.
+- **CONNECT + remember blocked** — HTTPS proxy tunnels cannot become org-wide host rules; use approve-once for CONNECT.
+- **Org rules deduplicated** — unique index on `(org_id, scope, scope_ref_id, effect, host, port, method, path_prefix)`; re-remember returns existing rule.
+- **Rule revoke** — `DELETE /api/v1/rules/{id}` + UI Revoke button; audit event `policy_rule_revoked`.
 
 ### Rule shape (allowlist keys)
 
@@ -503,9 +514,10 @@ Scope:
 - `id`, `agent_id`, `user_id`, `org_id`
 - `method`, `host`, `port`, `path`, `scheme`
 - `status` (`pending` | `approved` | `denied` | `auto_approved` | `expired`)
-- `rule_id` (nullable — if auto-approved)
+- `rule_id` (nullable — if auto-approved or remember approval)
 - `requested_at`, `decided_at`, `decided_by`
-- `error_message` (nullable)
+- `error_message` (nullable — deny feedback)
+- `consumed_at` (nullable — set when one-time approve-once grant is used on retry)
 
 **`policy_rules`**
 
@@ -520,13 +532,24 @@ Scope:
 
 ### IDs in proxy path
 
-Gateway must know `agent_id` / `user_id` on each request. Options (pick one in implementation):
+**v1 implemented:** One Hermes container = one fixed identity via env vars:
 
-- Proxy URL embeds agent token: `http://gateway:8080/` with header `X-Agent-Id` / `Proxy-Authorization`
-- Sidecar injects headers
-- One Hermes container = one agent identity (simplest v1)
+- `GATEWAY_ORG_ID`, `GATEWAY_USER_ID`, `GATEWAY_AGENT_ID`
+- Seeded in `deploy/postgres/init/002_seed.sql`
 
----
+**Limitation:** All proxied traffic on a gateway instance shares one agent/user pair. The User 2 org-rule story is **policy-correct** but **not demo-proven** with distinct per-container identities until Phase 4+ identity injection (`X-Agent-Id` header or multi-service Compose).
+
+### SQL migrations
+
+| File | Purpose |
+|------|---------|
+| `001_schema.sql` | Core tables |
+| `002_seed.sql` | Default org/user/agent/admin actors |
+| `003_phase2_one_time_approval.sql` | `consumed_at` on egress_requests |
+| `004_phase35_rule_hardening.sql` | Unique index for rule dedup |
+| `006_second_agent.sql` | Second user/agent for cross-agent org-rule smoke |
+
+After init SQL changes: `docker compose down -v` before `up`.
 
 ## API sketch (gateway + UI)
 
@@ -538,19 +561,36 @@ Gateway must know `agent_id` / `user_id` on each request. Options (pick one in i
 
 ### Control plane (REST)
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/v1/requests?status=pending` | List pending egress requests |
-| GET | `/api/v1/requests/{id}` | Request detail |
-| POST | `/api/v1/requests/{id}/approve` | Approve once or with `remember: true`, `scope: org` |
-| POST | `/api/v1/requests/{id}/deny` | Deny with optional feedback |
-| GET | `/api/v1/rules` | List policy rules |
-| POST | `/api/v1/rules` | Create rule manually |
-| DELETE | `/api/v1/rules/{id}` | Revoke rule |
-| GET | `/api/v1/audit` | Audit log query |
-| GET | `/health` | Health check |
+| Method | Path | Status | Purpose |
+|--------|------|--------|---------|
+| GET | `/health` | **Done** | Health check |
+| GET | `/ui` | **Done** | Embedded approval inbox (same process as gateway) |
+| GET | `/api/v1/requests` | **Done** | List egress requests; filters: `status`, `host`, `user_id`, `agent_id`, `limit` |
+| GET | `/api/v1/requests/{id}` | **Done** | Request detail |
+| POST | `/api/v1/requests/{id}/approve` | **Done** | Approve once (`{}`) or org remember (`{"remember":true,"scope":"org"}`) |
+| POST | `/api/v1/requests/{id}/deny` | **Done** | Deny with optional `feedback` |
+| GET | `/api/v1/rules` | **Done** | List policy rules |
+| POST | `/api/v1/rules` | **Done** | Manual rule create (admin token required) |
+| DELETE | `/api/v1/rules/{id}` | **Done** | Revoke org/user/agent rule |
+| GET | `/api/v1/audit` | **Done** | Latest 100 audit events (no pagination yet) |
 
-Auth TBD: API key for admin UI, mTLS for corp — not blocking MVP on localhost.
+### Admin auth (implemented — interim)
+
+| Env var | Purpose |
+|---------|---------|
+| `GATEWAY_ADMIN_TOKEN` | When set, all `/api/v1/*` require `X-Admin-Token` or `Authorization: Bearer` |
+| `GATEWAY_ADMIN_ID` | Default approver UUID if `GATEWAY_APPROVER_HEADER` not sent |
+| `GATEWAY_APPROVER_HEADER` | Header name for reviewer ID (default `X-Gateway-Approver`) |
+
+**Compose default:** `GATEWAY_ADMIN_TOKEN=dev-local-admin-token` (dev only).
+
+**UI behavior:** On 401, React inbox opens a **Session / credentials** modal; token stored in `sessionStorage`. Interim pilot auth — Phase 5 replaces with SSO.
+
+Approve body for org remember:
+
+```json
+{ "remember": true, "scope": "org" }
+```
 
 ---
 
@@ -606,42 +646,73 @@ Hermes needs LLM access. Options:
 
 ## MVP phases & acceptance criteria
 
+### Implementation summary
+
+| Phase | Status | Branch / notes |
+|-------|--------|----------------|
+| 0 Scaffold | **Done** | Compose, Makefile, README, spec |
+| 1 Gateway core | **Done** | Proxy, default deny, Postgres logging |
+| 2 Approval UI | **Done** | `/ui`, approve-once, deny, retry |
+| 2.5 Team inbox | **Done** | React + Vite at `services/approval-ui/`; master-detail, tabs, filters |
+| 2.75 Pilot hardening | **Done** | Token gate, polling, modals, CONNECT warnings |
+| 3 Org rules | **Done** | Remember-for-org, auto-approve, `rule_id` audit |
+| 3.5 Policy hardening | **Done** | POST rules, expires_at, identity headers, integration tests |
+| 3.6 UI polish | **Done** | Utilitarian internal-system wireframe styling; credentials modal |
+| 4 Hermes + lockdown | **Not started** | Hermes stub only; smoke checks partial network isolation |
+| 5 Hardening | **Not started** | SSO, TLS, export, multi-tenant |
+
+Verify: `make smoke` from repo root (requires running stack).
+
+#### Smoke test coverage (`scripts/smoke-phase0.sh`)
+
+| Check | Phase |
+|-------|-------|
+| Gateway health + `/ui` served | 0–2 |
+| Hermes cannot reach postgres or public internet directly | 4 (partial) |
+| Proxied HTTPS → pending row persisted | 1 |
+| Approve-once → GitHub API retry succeeds | 2 |
+| Deny → httpbin remains blocked on retry | 2 |
+| Approve + remember (HTTP) → org rule + auto-approve with `rule_id` | 3 |
+| CONNECT + remember → 400 rejected | 3.5 |
+
+Smoke uses `GATEWAY_ADMIN_TOKEN` via `api_curl` helper for all control-plane calls.
+
 ### Phase 0 — Scaffold
 
-- [ ] New repo or `services/policy-gateway/` directory
-- [ ] `docker compose` with postgres + gateway stub + hermes stub
-- [ ] README pointing to this spec
+- [x] Repo / `services/policy-gateway/` directory
+- [x] `docker compose` with postgres + gateway + hermes stub
+- [x] README pointing to this spec
 
 ### Phase 1 — Gateway core
 
-- [ ] HTTP proxy accepts connections from Hermes container
-- [ ] Every request persisted to Postgres with `pending` / `auto_approved` / `denied`
-- [ ] Default deny unknown hosts (block with 403 or proxy error)
+- [x] HTTP proxy accepts connections from Hermes container
+- [x] Every request persisted to Postgres with `pending` / `auto_approved` / `denied` / `approved`
+- [x] Default deny unknown hosts (403 + JSON body with `request_id`)
 
-**Acceptance:** `curl -x http://gateway:8080 https://example.com` from Hermes container creates DB row.
+**Acceptance:** `curl -x http://gateway:8080 https://example.com` from Hermes container creates DB row. **Passed** (`make smoke`).
 
 ### Phase 2 — Approval UI
 
-- [ ] Web UI lists pending requests
-- [ ] Approve once → request completes (or retry works)
-- [ ] Deny → remains blocked
+- [x] Web UI lists pending requests (`GET /ui`, `/api/v1/requests`)
+- [x] Approve once → retry works (consumable grant)
+- [x] Deny → remains blocked for same agent + pattern
 
-**Acceptance:** Human can approve a blocked GitHub API call from UI.
+**Acceptance:** Human can approve a blocked GitHub API call from UI. **Passed** (smoke + manual `/ui`).
 
 ### Phase 2.5 — Team inbox UX
 
 Purpose: evolve the MVP inbox into a **NemoHermes/OpenShell-style approval experience** without adopting their platform or deployment model.
 
-- [ ] Replace the plain embedded HTML inbox with a richer inbox UI (React is acceptable)
-- [ ] Keep the gateway as the source of truth; do **not** depend on NemoHermes, OpenShell, or LAP runtime APIs
-- [ ] Inbox shows enough context for a human approver to decide safely: `user_id`, `agent_id`, method, host, port, path, scheme, requested time, current status
-- [ ] Add request detail view or drawer for a single pending request
-- [ ] Add filters at minimum for status, host, user, and agent
-- [ ] Design the approve flow so Phase 3 can add `remember: true` and `scope: org` without reworking the UI
-- [ ] Keep approve-once and deny as first-class actions in the inbox row/detail view
-- [ ] Prepare the UI structure for future tabs/views: pending inbox, rules, audit
+- [x] Replace plain HTML with **React inbox** — `services/approval-ui/` (Vite), embedded at `/ui`
+- [x] Gateway remains source of truth; no NemoHermes/OpenShell/LAP dependency
+- [x] Inbox shows `user_id`, `agent_id`, method, host, port, path, scheme, status, timestamps
+- [x] Request detail pane (master-detail layout)
+- [x] Filters: status, host, user_id, agent_id (server-side)
+- [x] Approve flow extended for Phase 3 (`remember: true`, `scope: org`)
+- [x] Approve-once and deny in detail pane + confirmation modals
+- [x] Tabs: Inbox, Rules, Audit
 
-**Acceptance:** A reviewer can open the inbox, identify which user/agent triggered a request, inspect the request details, and approve or deny it without using raw API endpoints.
+**Acceptance:** Reviewer can inspect and act on requests via `/ui` without raw curl. **Passed.**
 
 #### Phase 2.5 build context
 
@@ -652,25 +723,28 @@ This phase is about **UX and product shape**, not changing the core product deci
 - The product remains a **single-host Compose deployment** in v1/v1.5
 - The gateway remains an **HTTP(S) egress policy gateway**, not a Hermes chat server, not an LLM router, and not OpenShell
 
+**Shipped:** React + Vite inbox (`services/approval-ui/`) with utilitarian internal-system styling (Phase 3.6).
+
 #### Phase 2.5 identity assumptions
 
 The richer inbox is only useful if each request can be attributed clearly.
 
-- One Hermes container = one `agent_id` remains acceptable in v1
-- The data model already includes `actors`, `agents`, `user_id`, `agent_id`, and `org_id`; the UI should expose them instead of hiding them
+- One Hermes container = one `agent_id` **implemented** via `GATEWAY_*_ID` env vars
+- The data model includes `actors`, `agents`, `user_id`, `agent_id`, and `org_id`; the UI exposes raw IDs today
 - For a true multi-user setup on one gateway, requests must be attributable to the originating user/agent pair
 - Do not fake multi-user by only reskinning the UI; identity and approval semantics matter more than visuals
 
 #### Phase 2.5 API expectations
 
-The UI should be built against the gateway REST API, expanding it as needed rather than introducing a second control plane.
+The UI is built against the gateway REST API — no second control plane.
 
-- `GET /api/v1/requests?status=pending` remains the inbox source
-- `GET /api/v1/requests/{id}` should provide full request detail
-- `POST /api/v1/requests/{id}/approve` remains the approve-once action in Phase 2.5
-- `POST /api/v1/requests/{id}/deny` remains the deny action
-- Future-ready UI affordance: Phase 3 will extend approve with `remember: true` and `scope: org`
-- Future-ready views should expect `GET /api/v1/rules` and `GET /api/v1/audit`
+- `GET /api/v1/requests?status=pending` — inbox source (**done**)
+- `GET /api/v1/requests/{id}` — full request detail (**done**)
+- `POST /api/v1/requests/{id}/approve` — approve-once; Phase 3 extended with `remember` + `scope: org` (**done**)
+- `POST /api/v1/requests/{id}/deny` — deny with optional feedback (**done**)
+- `GET /api/v1/rules` — rules tab (**done**); `DELETE /api/v1/rules/{id}` revoke (**done**)
+- `GET /api/v1/audit` — audit tab, latest 100 (**done**)
+- `POST /api/v1/rules` — manual create (**501**, deferred)
 
 #### Phase 2.5 non-goals
 
@@ -681,44 +755,85 @@ The UI should be built against the gateway REST API, expanding it as needed rath
 
 ### Phase 2.75 — Inbox hardening for internal pilots
 
-Purpose: make the single-host team inbox credible for a small internal pilot before full Phase 5 hardening.
+- [x] Minimal admin protection (`GATEWAY_ADMIN_TOKEN` on `/api/v1/*`)
+- [x] Reviewer attribution via `X-Gateway-Approver` / `GATEWAY_APPROVER_HEADER`
+- [x] Pending-first default + server-side filtering
+- [x] Detail fetched via `GET /api/v1/requests/{id}` before action
+- [x] Approve confirmation + CONNECT tunnel warning
+- [x] Structured deny modal (reason + note)
+- [x] 15s polling refresh on Inbox tab
+- [x] Audit tab shows “latest 100 events” disclaimer
 
-- [ ] Add minimal admin protection for the inbox and control-plane APIs
-- [ ] Attribute approvals to the acting reviewer instead of a hidden static admin only
-- [ ] Default the inbox to `pending` requests and move filtering to the server
-- [ ] Add request-detail refresh before action so reviewers do not act on stale data
-- [ ] Add approve confirmation and explicit **CONNECT tunnel** warning
-- [ ] Replace ad-hoc deny prompt with structured deny reason + reviewer note
-- [ ] Add automatic inbox refresh (polling or SSE later) for multi-reviewer freshness
-- [ ] Show audit limitations honestly (for example “latest 100 events”) until pagination/export exists
-
-**Acceptance:** A reviewer can authenticate to the inbox, see a pending-first queue, review a fresh request detail record, get a tunnel-scope warning for CONNECT, and approve or deny without relying on raw prompts or stale page state.
+**Acceptance:** **Passed** for security pilot mechanics.
 
 #### Phase 2.75 scope rules
 
 - This is still a **single-gateway** enhancement, not fleet control plane work
-- Static token or reverse-proxy identity is acceptable as an interim control
+- Static token or reverse-proxy identity is acceptable as an interim control (**implemented:** `GATEWAY_ADMIN_TOKEN` + UI session card)
 - Do **not** wait for full SSO, TLS, CSV export, or multi-tenant RBAC before landing Phase 2.75
 - Do **not** let 2.75 replace Phase 5; it reduces obvious pilot risk but is not the final security posture
 
 ### Phase 3 — Org rules
 
-- [x] Approve + “remember for org” creates rule
-- [x] Second agent/user same host/path → auto-approved, logged with `rule_id`
+- [x] Approve + “remember for org” creates `policy_rules` row
+- [x] Matching retry → `auto_approved` with `rule_id`
 
-**Acceptance:** User 2 flow from sequence diagram works.
+**Acceptance:** User 2 flow from sequence diagram. **Partially demonstrated:** same-container retry auto-approves after remember; **cross-agent User 2 not smoke-tested** (single static identity per gateway).
+
+#### Phase 3 implementation notes
+
+- Remember uses **HTTP GET path** from pending request as `path_prefix` (not path editor UI)
+- HTTPS egress uses CONNECT — **cannot** remember; approve-once only
+- Audit events: `egress_approved_once`, `egress_approved_org_rule`, `egress_auto_approved`, `egress_denied`, `policy_rule_revoked`
+- Approval + audit writes are **atomic** in Postgres transactions (Phase 3.5)
+
+### Phase 3.5 — Policy lifecycle hardening
+
+Purpose: address security/backend review findings before internal pilot — **not** fleet or UI redesign.
+
+- [x] Block `remember=true` on CONNECT requests
+- [x] Require `GATEWAY_ADMIN_TOKEN` when `remember=true`
+- [x] Agent standing deny evaluated **before** org allow rules
+- [x] `DELETE /api/v1/rules/{id}` + audit
+- [x] Rule dedup via unique index + upsert semantics on remember
+- [x] Safe path matching (`starts_with` + `/` boundary)
+- [x] Atomic audit with approve/deny/revoke transactions
+- [x] `POST /api/v1/rules` manual bootstrap
+- [x] Rule `expires_at` on remember + enforcement in `MatchRules`
+- [x] Postgres integration tests for org-rule tx (`make test-integration`)
+- [x] Cross-agent smoke via `X-Gateway-Agent-Id` when `GATEWAY_ALLOW_IDENTITY_OVERRIDE=true`
+
+**Acceptance:** Org rules are reversible, non-duplicative, cannot be minted without admin token, CONNECT cannot become silent org tunnel rule, manual rules and TTLs work. **Passed** (`make smoke`).
+
+### Phase 3.6 — Inbox UI polish (done)
+
+Purpose: make `/ui` credible for corp reviewers — utilitarian wireframe aesthetic, not portfolio chrome.
+
+- [x] Remove dev/phase copy from user-facing strings
+- [x] Replace top-level Admin Session card with credentials modal (`Session / credentials`)
+- [x] Explicit **Apply filters** control (internal-system pattern)
+- [ ] Show actor `display_name` instead of raw UUIDs where possible — deferred (needs API join)
+- [x] React + Vite (`services/approval-ui/`)
+- [x] Dense layout: gray panels, bordered tables, monospace IDs, minimal decoration
+
+**Non-goals:** Fleet rollout UI, centralized policy push, SSO (Phase 5).
 
 ### Phase 4 — Hermes + network lockdown
 
-- [ ] Hermes Dockerfile (reference LAP)
-- [ ] Docker network: Hermes cannot reach internet except via gateway
-- [ ] Hermes web/terminal tool triggers pending request in UI
+- [ ] Hermes Dockerfile from [LAP templates/hermes](https://github.com/LiteLLM-Labs/litellm-agent-control-plane/tree/main/templates/hermes) (real agent, not curl stub)
+- [x] Partial: Docker networks isolate Hermes from postgres and direct internet (`make smoke` network checks)
+- [ ] Hermes web/terminal tool triggers pending request in UI end-to-end
 
-**Acceptance:** End-to-end agent action → UI approval → completion.
+**Acceptance:** End-to-end agent action → UI approval → completion. **Not met.**
 
 ### Phase 5 — Hardening (post-MVP)
 
-- Admin auth, TLS, timeouts, rate limits, export audit CSV, multi-tenant orgs
+- [ ] SSO / proper admin auth (replace token-in-UI)
+- [ ] TLS, timeouts, rate limits
+- [ ] Audit export CSV, pagination
+- [ ] Multi-tenant orgs
+- [ ] Persistent org-scoped **deny** rules (today: agent-scoped deny via egress rows only)
+- [ ] Per-request identity (`X-Agent-Id`) for multi-agent on one host
 
 ---
 
@@ -764,28 +879,51 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 | Question | Options | Recommendation |
 |----------|---------|----------------|
 | Product name | Hermes Policy Gateway / Agent Egress Control Plane | Either; avoid “LiteLLM” in name |
-| Repo location | New repo vs `services/` in Portfolio repo | **New repo** when scaffold starts |
-| Who can approve | Agent owner vs org admin | Org admin for shared rules; agent owner for once |
-| HTTPS visibility | CONNECT vs MITM | **CONNECT + host** for v1 |
+| Repo location | New repo vs `services/` in Portfolio repo | **Resolved:** [ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents) |
+| Who can approve | Agent owner vs org admin | Org admin for shared rules (`remember`); agent owner for approve-once |
+| HTTPS visibility | CONNECT vs MITM | **CONNECT + host** for v1; remember blocked on CONNECT |
 | Model egress | Same gateway vs separate | **Separate network path** for v1 |
-| Gateway language | Go / Rust / Node | Agent’s choice; Go has good proxy libs |
-| UI framework | React / plain HTML | React preferred for Phase 2.5 team inbox; plain HTML acceptable only for MVP |
+| Gateway language | Go / Rust / Node | **Go** — `services/policy-gateway/` |
+| UI framework | React / plain HTML | **React + Vite** — `services/approval-ui/` |
 
 ---
 
 ## Next steps for a new agent session
 
-1. Confirm user still wants **egress-first, no LAP fork** (this doc assumes yes).
-2. Create repo scaffold + Compose skeleton.
-3. Implement Phase 1 gateway proxy + Postgres logging.
-4. Implement Phase 2 minimal UI.
-5. Upgrade UI in Phase 2.5 to a richer multi-user/team inbox without changing the core gateway architecture.
-6. Land Phase 2.75 inbox hardening for internal pilots.
-7. Implement Phase 3 org rules (`remember: true`, `scope: org`).
-8. Wire Hermes container with network lockdown (Phase 4).
-9. Demo: GitHub API call → pending → approve → org rule → second user auto-approve.
+**Current branch:** `feat/phase-2-approval-ui` (Phases 0–3.5 landed here).
 
-**Do not start with:** NemoHermes install, OpenShell gateway, LAP fork, or Portfolio Website changes.
+### Verify before new work
+
+```bash
+docker compose down -v && docker compose up --build   # after init SQL changes
+make smoke
+make test   # go test ./... in policy-gateway
+open http://localhost:8080/ui
+```
+
+Default dev admin token: `dev-local-admin-token` (see `.env.example`).
+
+### Recommended next work (priority order)
+
+1. **Phase 4 — Hermes + network lockdown** — Replace `services/hermes/` stub with LAP-style Hermes Dockerfile; prove agent tool/web fetch → pending → approve → complete.
+2. **Phase 4 — Hermes + network lockdown** — Replace `services/hermes/` stub with LAP-style Hermes Dockerfile; prove agent tool/web fetch → pending → approve → complete.
+3. **Phase 5 — Hardening** — SSO, TLS, audit export, multi-tenant.
+
+### Do not start with
+
+NemoHermes install, OpenShell gateway, LAP fork, fleet rollout UI, or Portfolio Website changes.
+
+### Key implementation files
+
+| Area | Path |
+|------|------|
+| Spec | `docs/specs/hermes-policy-gateway.md` |
+| Gateway entry | `services/policy-gateway/` |
+| Policy engine | `internal/policy/engine.go` |
+| Approval service | `internal/service/approval.go` |
+| Embedded UI | `services/approval-ui/` → `internal/ui/dist/` |
+| Migrations | `deploy/postgres/init/00*.sql` |
+| Smoke tests | `scripts/smoke-phase0.sh` |
 
 ---
 
@@ -798,3 +936,5 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 | 2026-08-19 | Expanded to full agent handoff document (this version) |
 | 2026-08-19 | Added Phase 2.5 team inbox UX direction and multi-user UI context |
 | 2026-08-19 | Added Phase 2.75 inbox hardening scope for internal pilots |
+| 2026-08-19 | **Implementation handoff:** Phases 0–3 complete; Phase 2.5/2.75/3/3.5 status, API table, policy evaluation order, migrations, admin auth, Phase 3.6 UI polish planned |
+| 2026-08-19 | **React approval UI:** Vite app at `services/approval-ui/`, embedded via `go:embed dist/`; Phase 2.5 + 3.6 marked done |

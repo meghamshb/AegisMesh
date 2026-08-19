@@ -51,7 +51,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/requests/{id}", s.handleGetRequest)
 	s.mux.HandleFunc("POST /api/v1/requests/{id}/approve", s.handleApproveRequest)
 	s.mux.HandleFunc("POST /api/v1/requests/{id}/deny", s.handleDenyRequest)
-	s.mux.HandleFunc("POST /api/v1/rules", s.notImplemented)
+	s.mux.HandleFunc("POST /api/v1/rules", s.handleCreateRule)
 	s.mux.HandleFunc("DELETE /api/v1/rules/{id}", s.handleDeleteRule)
 }
 
@@ -193,6 +193,11 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		var expiresPast domain.ErrExpiresAtInPast
+		if errors.As(err, &expiresPast) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		s.handleRequestError(w, err)
 		return
 	}
@@ -306,6 +311,55 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	var body domain.CreatePolicyRuleBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rule, err := s.egress.CreateRule(ctx, s.cfg.Identity.OrgID, s.approverID(r), body)
+	if err != nil {
+		var invalid domain.InvalidEnumError
+		if errors.As(err, &invalid) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var connectBlocked domain.ErrRuleCONNECTNotAllowed
+		if errors.As(err, &connectBlocked) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var expiresPast domain.ErrExpiresAtInPast
+		if errors.As(err, &expiresPast) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var scopeRef domain.ErrInvalidScopeRef
+		if errors.As(err, &scopeRef) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var exists domain.ErrRuleAlreadyExists
+		if errors.As(err, &exists) {
+			s.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		s.logger.Error("create policy rule", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to create rule")
+		return
+	}
+
+	s.writeJSON(w, http.StatusCreated, rule)
 }
 
 func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {
