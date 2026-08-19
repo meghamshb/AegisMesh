@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hermes_policy
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: hermes
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_policy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  policy-gateway:
+    build:
+      context: ./services/policy-gateway
+    environment:
+      POSTGRES_DSN: postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable
+      GATEWAY_LISTEN_ADDR: :8080
+      GATEWAY_PROXY_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+      - agent
+      - egress
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  hermes:
+    build:
+      context: ./services/hermes
+    environment:
+      GATEWAY_HEALTH_URL: http://policy-gateway:8080/health
+      HTTP_PROXY: http://policy-gateway:8080
+      HTTPS_PROXY: http://policy-gateway:8080
+      NO_PROXY: localhost,127.0.0.1,policy-gateway
+    depends_on:
+      policy-gateway:
+        condition: service_healthy
+    networks:
+      - agent
+    volumes:
+      - ./workspace:/work:ro
+
+networks:
+  data:
+    internal: true
+  agent:
+    internal: true
+  egress:
+    driver: bridge
+
+volumes:
+  postgres_data:

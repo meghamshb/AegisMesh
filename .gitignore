@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+node_modules/
+dist/
+build/
+.idea/
+.vscode/
+workspace/*
+!workspace/.gitkeep
+
+# Go
+services/policy-gateway/bin/
+services/policy-gateway/vendor/
