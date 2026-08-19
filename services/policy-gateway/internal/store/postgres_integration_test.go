@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/domain"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
 func integrationDSN(t *testing.T) string {

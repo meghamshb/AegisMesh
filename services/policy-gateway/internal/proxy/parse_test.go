@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/proxy"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/proxy"
 )
 
 func TestParseCONNECTRequest(t *testing.T) {

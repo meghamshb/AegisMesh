@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 )
 
 func TestLoadDefaults(t *testing.T) {

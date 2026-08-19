@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/domain"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/policy"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
 type EgressService struct {

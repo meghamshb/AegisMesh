@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/domain"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/service"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/store"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/ui"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/ui"
 )
 
 type Server struct {

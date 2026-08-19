@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/app"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/config"
-	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/app"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
 func main() {

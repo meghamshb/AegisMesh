@@ -1,8 +1,8 @@
-# ACP for Hermes Agents
+# Clearance
 
-Hermes Policy Gateway — an egress policy gateway and approval web UI so Hermes agents in Docker cannot reach the internet without logging, human approval, and optional org-scoped allow rules.
+Outbound policy for AI agents — an egress gateway and approval console so Hermes agents in Docker cannot reach the internet without logging, human approval, and optional org-scoped allow rules.
 
-- **Repo:** [meghamshb2006/ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents)
+- **Repo:** [meghamshb2006/clearance](https://github.com/meghamshb2006/clearance)
 - **Spec:** [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md)
 
 ## Phase status

@@ -35,7 +35,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="sys-header">
-        <h1>Hermes Policy Gateway — Egress Control</h1>
+        <h1>Clearance — Egress Control</h1>
         <span className="sys-meta">Outbound approval console · single-host deployment</span>
       </header>
 

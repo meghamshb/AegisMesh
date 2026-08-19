@@ -1,5 +1,5 @@
 ---
-title: Hermes Policy Gateway
+title: Clearance
 type: product-spec
 status: approved-direction
 audience: coding-agent
@@ -9,7 +9,7 @@ implementation_through: phase-3.5
 handoff: true
 ---
 
-# Hermes Policy Gateway — Agent Handoff Document
+# Clearance — Agent Handoff Document
 
 > **For coding agents:** Read this entire file before writing code, suggesting architecture changes, or installing third-party platforms. This is the source of truth for a **new product** that lives alongside (not inside) the Portfolio Website Next.js app.
 
@@ -30,7 +30,7 @@ handoff: true
 
 **Conflict resolution:** If the user’s latest message conflicts with **Strategic decisions** or **Non-goals**, follow this file and ask for clarification.
 
-**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.6.1-phase4` (see `GATEWAY_SERVICE_VERSION`).
+**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[clearance](https://github.com/meghamshb2006/clearance)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.6.1-phase4` (see `GATEWAY_SERVICE_VERSION`).
 
 ---
 
@@ -411,7 +411,7 @@ Do not assume LAP tool approvals substitute for network approvals.
 | LLM routing | Out of scope v1 (optional separate path) | Built-in `/v1/messages` |
 | Deploy | Compose: gateway + UI + DB + hermes | Compose: lap + postgres + optional profiles |
 | Fork? | N/A — we build greenfield | **Do not fork for v1** |
-| Repo | [ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents) | github.com/LiteLLM-Labs/litellm-agent-control-plane |
+| Repo | [clearance](https://github.com/meghamshb2006/clearance) | github.com/LiteLLM-Labs/litellm-agent-control-plane |
 
 **Borrow from LAP without forking:**
 
@@ -882,8 +882,8 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 
 | Question | Options | Recommendation |
 |----------|---------|----------------|
-| Product name | Hermes Policy Gateway / Agent Egress Control Plane | Either; avoid “LiteLLM” in name |
-| Repo location | New repo vs `services/` in Portfolio repo | **Resolved:** [ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents) |
+| Product name | **Clearance** / Agent Egress Control Plane | **Resolved:** Clearance |
+| Repo location | New repo vs `services/` in Portfolio repo | **Resolved:** [clearance](https://github.com/meghamshb2006/clearance) |
 | Who can approve | Agent owner vs org admin | Org admin for shared rules (`remember`); agent owner for approve-once |
 | HTTPS visibility | CONNECT vs MITM | **CONNECT + host** for v1; remember blocked on CONNECT |
 | Model egress | Same gateway vs separate | **Separate network path** for v1 |

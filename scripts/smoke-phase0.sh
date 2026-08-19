@@ -16,7 +16,7 @@ echo "$health_body" | grep -Fq '"status":"ok"'
 
 echo "Checking approval UI is served..."
 ui_body="$(curl -fsS http://localhost:8080/ui)"
-echo "$ui_body" | grep -Fq 'Hermes Policy Gateway'
+echo "$ui_body" | grep -Fq 'Clearance'
 
 echo "Resetting request, rule, and audit history for a clean smoke run..."
 docker compose exec -T postgres psql -U hermes -d hermes_policy -c \

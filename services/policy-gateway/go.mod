@@ -1,4 +1,4 @@
-module github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway
+module github.com/meghamshb2006/clearance/services/policy-gateway
 
 go 1.22
 

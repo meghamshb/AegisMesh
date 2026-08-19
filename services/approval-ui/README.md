@@ -1,6 +1,6 @@
 # Approval UI
 
-React + Vite approval console for the Hermes Policy Gateway. Built output is embedded into the Go gateway at `/ui`.
+React + Vite approval console for **Clearance**. Built output is embedded into the Go gateway at `/ui`.
 
 ## Design intent
 
