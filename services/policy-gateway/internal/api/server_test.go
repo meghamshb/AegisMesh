@@ -21,12 +21,16 @@ type stubStore struct{}
 
 func (stubStore) Ping(_ context.Context) error { return nil }
 
-func (stubStore) ListPendingRequests(_ context.Context) ([]domain.EgressRequest, error) {
+func (stubStore) ListRequests(_ context.Context, _ store.ListRequestsInput) ([]domain.EgressRequest, error) {
 	return []domain.EgressRequest{}, nil
 }
 
 func (stubStore) ListRules(_ context.Context) ([]domain.PolicyRule, error) {
 	return []domain.PolicyRule{}, nil
+}
+
+func (stubStore) ListAuditEvents(_ context.Context) ([]domain.AuditEvent, error) {
+	return []domain.AuditEvent{}, nil
 }
 
 func (stubStore) MatchRules(_ context.Context, _ store.MatchRulesInput) ([]domain.PolicyRule, error) {
@@ -38,6 +42,30 @@ func (stubStore) CreateEgressRequest(_ context.Context, _ store.CreateEgressRequ
 }
 
 func (stubStore) InsertAuditEvent(_ context.Context, _, _, _ string, _ map[string]any) error {
+	return nil
+}
+
+func (stubStore) GetEgressRequest(_ context.Context, _ string) (domain.EgressRequest, error) {
+	return domain.EgressRequest{}, nil
+}
+
+func (stubStore) ApproveRequestOnce(_ context.Context, _, _ string) (domain.EgressRequest, error) {
+	return domain.EgressRequest{}, nil
+}
+
+func (stubStore) DenyRequest(_ context.Context, _, _, _ string) (domain.EgressRequest, error) {
+	return domain.EgressRequest{}, nil
+}
+
+func (stubStore) FindConsumableApproval(_ context.Context, _ store.ApprovalMatchInput) (*domain.EgressRequest, error) {
+	return nil, nil
+}
+
+func (stubStore) HasDeniedPattern(_ context.Context, _ store.ApprovalMatchInput) (bool, error) {
+	return false, nil
+}
+
+func (stubStore) MarkApprovalConsumed(_ context.Context, _ string) error {
 	return nil
 }
 

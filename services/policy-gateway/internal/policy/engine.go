@@ -16,16 +16,23 @@ const (
 )
 
 type Request struct {
-	OrgID  string
-	Method string
-	Host   string
-	Port   int
-	Path   string
-	Scheme string
+	AgentID string
+	OrgID   string
+	Method  string
+	Host    string
+	Port    int
+	Path    string
+	Scheme  string
+}
+
+type Evaluation struct {
+	Decision        Decision
+	RuleID          *string
+	ApprovalGrantID *string
 }
 
 type Engine interface {
-	Evaluate(ctx context.Context, req Request) (Decision, *string, error)
+	Evaluate(ctx context.Context, req Request) (Evaluation, error)
 }
 
 type RuleEngine struct {
@@ -36,7 +43,7 @@ func NewRuleEngine(st store.Store) *RuleEngine {
 	return &RuleEngine{store: st}
 }
 
-func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Decision, *string, error) {
+func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, error) {
 	rules, err := e.store.MatchRules(ctx, store.MatchRulesInput{
 		OrgID:  req.OrgID,
 		Host:   req.Host,
@@ -45,22 +52,46 @@ func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Decision, *stri
 		Path:   req.Path,
 	})
 	if err != nil {
-		return "", nil, err
+		return Evaluation{}, err
 	}
 
 	for _, rule := range rules {
 		if rule.Effect == domain.RuleEffectDeny {
-			return DecisionDeny, &rule.ID, nil
+			return Evaluation{Decision: DecisionDeny, RuleID: &rule.ID}, nil
 		}
 	}
 
 	for _, rule := range rules {
 		if rule.Effect == domain.RuleEffectAllow {
-			return DecisionAllow, &rule.ID, nil
+			return Evaluation{Decision: DecisionAllow, RuleID: &rule.ID}, nil
 		}
 	}
 
-	return DecisionPending, nil, nil
+	match := store.ApprovalMatchInput{
+		AgentID: req.AgentID,
+		Host:    req.Host,
+		Port:    req.Port,
+		Method:  req.Method,
+		Path:    req.Path,
+	}
+
+	denied, err := e.store.HasDeniedPattern(ctx, match)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	if denied {
+		return Evaluation{Decision: DecisionDeny}, nil
+	}
+
+	approval, err := e.store.FindConsumableApproval(ctx, match)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	if approval != nil {
+		return Evaluation{Decision: DecisionAllow, ApprovalGrantID: &approval.ID}, nil
+	}
+
+	return Evaluation{Decision: DecisionPending}, nil
 }
 
 func DecisionToStatus(decision Decision) (domain.RequestStatus, error) {
@@ -74,5 +105,22 @@ func DecisionToStatus(decision Decision) (domain.RequestStatus, error) {
 	default:
 		var zero domain.RequestStatus
 		return zero, domain.InvalidEnumError{Field: "policy_decision", Value: string(decision)}
+	}
+}
+
+func StatusForEvaluation(eval Evaluation) (domain.RequestStatus, error) {
+	switch eval.Decision {
+	case DecisionAllow:
+		if eval.ApprovalGrantID != nil {
+			return domain.RequestStatusApproved, nil
+		}
+		return domain.RequestStatusAutoApproved, nil
+	case DecisionDeny:
+		return domain.RequestStatusDenied, nil
+	case DecisionPending:
+		return domain.RequestStatusPending, nil
+	default:
+		var zero domain.RequestStatus
+		return zero, domain.InvalidEnumError{Field: "policy_decision", Value: string(eval.Decision)}
 	}
 }

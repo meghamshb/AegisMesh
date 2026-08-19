@@ -43,6 +43,7 @@ type EgressRequest struct {
 	DecidedAt    *time.Time    `json:"decided_at,omitempty"`
 	DecidedBy    *string       `json:"decided_by,omitempty"`
 	ErrorMessage *string       `json:"error_message,omitempty"`
+	ConsumedAt   *time.Time    `json:"consumed_at,omitempty"`
 }
 
 type PolicyRule struct {
@@ -58,6 +59,15 @@ type PolicyRule struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	CreatedBy  string     `json:"created_by"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+}
+
+type AuditEvent struct {
+	ID              string         `json:"id"`
+	EgressRequestID *string        `json:"egress_request_id,omitempty"`
+	EventType       string         `json:"event_type"`
+	ActorID         *string        `json:"actor_id,omitempty"`
+	Metadata        map[string]any `json:"metadata"`
+	CreatedAt       time.Time      `json:"created_at"`
 }
 
 type HealthStatus struct {

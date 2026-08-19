@@ -5,9 +5,12 @@ Hermes Policy Gateway — an egress policy gateway and approval web UI so Hermes
 - **Repo:** [meghamshb2006/ACP-For-Hermes-Agents](https://github.com/meghamshb2006/ACP-For-Hermes-Agents)
 - **Spec:** [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md)
 
-## Phase 0 status
+## Phase status
 
-Scaffold complete. Phase 1 adds the HTTP(S) proxy core with default deny + pending persistence.
+- **Phase 0:** Scaffold complete
+- **Phase 1:** HTTP(S) proxy with default deny + pending persistence
+- **Phase 2:** Approval web UI at `/ui`, approve-once/deny API, one-time grant on retry
+- **Phase 2.75:** Pending-first inbox hardening, minimal admin protection, reviewer attribution, safer approve/deny flow
 
 ## Architecture
 
@@ -15,7 +18,7 @@ Scaffold complete. Phase 1 adds the HTTP(S) proxy core with default deny + pendi
 Developer ──► Hermes (Docker) ──HTTP_PROXY──► Policy Gateway ──► Internet APIs
                     │                              │
                     │                              ├──► Postgres
-                    │                              └──► Approval UI (phase 2+)
+                    │                              └──► Approval UI (`/ui`)
 ```
 
 Hermes attaches only to the `agent` network. Postgres lives on the `data` network. The gateway joins `data`, `agent`, and `egress`, so Hermes can reach the gateway but not the database or public internet directly.
@@ -36,7 +39,10 @@ Verify health:
 curl http://localhost:8080/health
 curl http://localhost:8080/api/v1/requests?status=pending
 curl http://localhost:8080/api/v1/rules
+open http://localhost:8080/ui
 ```
+
+If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver identifier for review actions.
 
 ## Services
 
@@ -57,7 +63,7 @@ curl http://localhost:8080/api/v1/rules
 
 ## MVP phases
 
-See the spec for acceptance criteria. **Phase 1 complete:** proxied requests are blocked by default and persisted as `pending`. Next: **Phase 2** approval UI.
+See the spec for acceptance criteria. **Phase 2.75 complete:** the inbox defaults to pending rows, refreshes automatically, confirms CONNECT approvals, and can be token-gated for internal pilots. Next: **Phase 3** org rules (`remember: true`).
 
 ## Development
 
@@ -77,8 +83,9 @@ services/policy-gateway/internal/
   app/      wiring + proxy/api dispatch
   config/   env configuration
   domain/   shared types
-  policy/   evaluation engine (stub)
-  proxy/    data-plane handler (stub)
+  policy/   evaluation engine
+  proxy/    data-plane handler
   service/  orchestration between API and store
   store/    postgres persistence
+  ui/       embedded approval inbox
 ```

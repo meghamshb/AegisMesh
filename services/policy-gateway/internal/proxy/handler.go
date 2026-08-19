@@ -62,7 +62,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decision, recorded, err := h.egress.RecordOutbound(r.Context(), h.identity, policy.Request{
-		OrgID:  h.identity.OrgID,
 		Method: parsed.Method,
 		Host:   parsed.Host,
 		Port:   parsed.Port,

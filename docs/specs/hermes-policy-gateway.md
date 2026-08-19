@@ -628,6 +628,79 @@ Hermes needs LLM access. Options:
 
 **Acceptance:** Human can approve a blocked GitHub API call from UI.
 
+### Phase 2.5 — Team inbox UX
+
+Purpose: evolve the MVP inbox into a **NemoHermes/OpenShell-style approval experience** without adopting their platform or deployment model.
+
+- [ ] Replace the plain embedded HTML inbox with a richer inbox UI (React is acceptable)
+- [ ] Keep the gateway as the source of truth; do **not** depend on NemoHermes, OpenShell, or LAP runtime APIs
+- [ ] Inbox shows enough context for a human approver to decide safely: `user_id`, `agent_id`, method, host, port, path, scheme, requested time, current status
+- [ ] Add request detail view or drawer for a single pending request
+- [ ] Add filters at minimum for status, host, user, and agent
+- [ ] Design the approve flow so Phase 3 can add `remember: true` and `scope: org` without reworking the UI
+- [ ] Keep approve-once and deny as first-class actions in the inbox row/detail view
+- [ ] Prepare the UI structure for future tabs/views: pending inbox, rules, audit
+
+**Acceptance:** A reviewer can open the inbox, identify which user/agent triggered a request, inspect the request details, and approve or deny it without using raw API endpoints.
+
+#### Phase 2.5 build context
+
+This phase is about **UX and product shape**, not changing the core product decision.
+
+- Copy the **approval inbox pattern** from NemoHermes/OpenShell/LAP if helpful
+- Do **not** copy their control plane, onboarding flow, or sandbox runtime requirements
+- The product remains a **single-host Compose deployment** in v1/v1.5
+- The gateway remains an **HTTP(S) egress policy gateway**, not a Hermes chat server, not an LLM router, and not OpenShell
+
+#### Phase 2.5 identity assumptions
+
+The richer inbox is only useful if each request can be attributed clearly.
+
+- One Hermes container = one `agent_id` remains acceptable in v1
+- The data model already includes `actors`, `agents`, `user_id`, `agent_id`, and `org_id`; the UI should expose them instead of hiding them
+- For a true multi-user setup on one gateway, requests must be attributable to the originating user/agent pair
+- Do not fake multi-user by only reskinning the UI; identity and approval semantics matter more than visuals
+
+#### Phase 2.5 API expectations
+
+The UI should be built against the gateway REST API, expanding it as needed rather than introducing a second control plane.
+
+- `GET /api/v1/requests?status=pending` remains the inbox source
+- `GET /api/v1/requests/{id}` should provide full request detail
+- `POST /api/v1/requests/{id}/approve` remains the approve-once action in Phase 2.5
+- `POST /api/v1/requests/{id}/deny` remains the deny action
+- Future-ready UI affordance: Phase 3 will extend approve with `remember: true` and `scope: org`
+- Future-ready views should expect `GET /api/v1/rules` and `GET /api/v1/audit`
+
+#### Phase 2.5 non-goals
+
+- Do **not** integrate NemoHermes/OpenShell directly
+- Do **not** fork LAP just to get its inbox
+- Do **not** build fleet management, laptop registration, Slack approvals, or multi-runtime orchestration here
+- Do **not** let UI polish expand scope enough to delay org rules and real Hermes/network lockdown
+
+### Phase 2.75 — Inbox hardening for internal pilots
+
+Purpose: make the single-host team inbox credible for a small internal pilot before full Phase 5 hardening.
+
+- [ ] Add minimal admin protection for the inbox and control-plane APIs
+- [ ] Attribute approvals to the acting reviewer instead of a hidden static admin only
+- [ ] Default the inbox to `pending` requests and move filtering to the server
+- [ ] Add request-detail refresh before action so reviewers do not act on stale data
+- [ ] Add approve confirmation and explicit **CONNECT tunnel** warning
+- [ ] Replace ad-hoc deny prompt with structured deny reason + reviewer note
+- [ ] Add automatic inbox refresh (polling or SSE later) for multi-reviewer freshness
+- [ ] Show audit limitations honestly (for example “latest 100 events”) until pagination/export exists
+
+**Acceptance:** A reviewer can authenticate to the inbox, see a pending-first queue, review a fresh request detail record, get a tunnel-scope warning for CONNECT, and approve or deny without relying on raw prompts or stale page state.
+
+#### Phase 2.75 scope rules
+
+- This is still a **single-gateway** enhancement, not fleet control plane work
+- Static token or reverse-proxy identity is acceptable as an interim control
+- Do **not** wait for full SSO, TLS, CSV export, or multi-tenant RBAC before landing Phase 2.75
+- Do **not** let 2.75 replace Phase 5; it reduces obvious pilot risk but is not the final security posture
+
 ### Phase 3 — Org rules
 
 - [ ] Approve + “remember for org” creates rule
@@ -696,7 +769,7 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 | HTTPS visibility | CONNECT vs MITM | **CONNECT + host** for v1 |
 | Model egress | Same gateway vs separate | **Separate network path** for v1 |
 | Gateway language | Go / Rust / Node | Agent’s choice; Go has good proxy libs |
-| UI framework | React / plain HTML | React fine for inbox |
+| UI framework | React / plain HTML | React preferred for Phase 2.5 team inbox; plain HTML acceptable only for MVP |
 
 ---
 
@@ -706,8 +779,11 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 2. Create repo scaffold + Compose skeleton.
 3. Implement Phase 1 gateway proxy + Postgres logging.
 4. Implement Phase 2 minimal UI.
-5. Wire Hermes container with network lockdown (Phase 4).
-6. Demo: GitHub API call → pending → approve → org rule → second user auto-approve.
+5. Upgrade UI in Phase 2.5 to a richer multi-user/team inbox without changing the core gateway architecture.
+6. Land Phase 2.75 inbox hardening for internal pilots.
+7. Implement Phase 3 org rules (`remember: true`, `scope: org`).
+8. Wire Hermes container with network lockdown (Phase 4).
+9. Demo: GitHub API call → pending → approve → org rule → second user auto-approve.
 
 **Do not start with:** NemoHermes install, OpenShell gateway, LAP fork, or Portfolio Website changes.
 
@@ -720,3 +796,5 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 | 2026-08-19 | Initial spec |
 | 2026-08-19 | Added LAP comparison, architecture diagrams, no-fork decision |
 | 2026-08-19 | Expanded to full agent handoff document (this version) |
+| 2026-08-19 | Added Phase 2.5 team inbox UX direction and multi-user UI context |
+| 2026-08-19 | Added Phase 2.75 inbox hardening scope for internal pilots |

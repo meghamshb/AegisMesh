@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
 	defaultListenAddr    = ":8080"
 	defaultServiceName   = "policy-gateway"
-	defaultServiceVer    = "0.2.0-phase1"
+	defaultServiceVer    = "0.3.0-phase2"
 	defaultPostgresDSN   = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
 	defaultReadTimeout   = 15 * time.Second
 	defaultWriteTimeout  = 15 * time.Second
@@ -20,6 +21,7 @@ const (
 	defaultOrgID   = "11111111-1111-1111-1111-111111111010"
 	defaultUserID  = "11111111-1111-1111-1111-111111111001"
 	defaultAgentID = "11111111-1111-1111-1111-111111111020"
+	defaultAdminID = "11111111-1111-1111-1111-111111111002"
 )
 
 type AgentIdentity struct {
@@ -39,6 +41,9 @@ type Config struct {
 	ShutdownGrace  time.Duration
 	ProxyEnabled   bool
 	Identity       AgentIdentity
+	AdminID        string
+	AdminToken     string
+	ApproverHeader string
 }
 
 func Load() (Config, error) {
@@ -78,6 +83,9 @@ func Load() (Config, error) {
 			UserID:  envOrDefault("GATEWAY_USER_ID", defaultUserID),
 			AgentID: envOrDefault("GATEWAY_AGENT_ID", defaultAgentID),
 		},
+		AdminID:        envOrDefault("GATEWAY_ADMIN_ID", defaultAdminID),
+		AdminToken:     strings.TrimSpace(os.Getenv("GATEWAY_ADMIN_TOKEN")),
+		ApproverHeader: envOrDefault("GATEWAY_APPROVER_HEADER", "X-Gateway-Approver"),
 	}
 
 	if cfg.PostgresDSN == "" {
