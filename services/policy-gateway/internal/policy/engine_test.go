@@ -33,10 +33,14 @@ func (s stubStore) InsertAuditEvent(context.Context, string, string, string, map
 func (s stubStore) GetEgressRequest(context.Context, string) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
-func (s stubStore) ApproveRequestOnce(context.Context, string, string) (domain.EgressRequest, error) {
+func (s stubStore) ApproveRequestOnce(context.Context, string, string, store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
-func (s stubStore) DenyRequest(context.Context, string, string, string) (domain.EgressRequest, error) {
+func (s stubStore) ApproveRequestWithOrgRule(context.Context, string, string, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+	return domain.EgressRequest{}, domain.PolicyRule{}, nil
+}
+func (s stubStore) DeletePolicyRule(context.Context, string, store.AuditInput) error { return nil }
+func (s stubStore) DenyRequest(context.Context, string, string, string, store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
 func (s stubStore) FindConsumableApproval(context.Context, store.ApprovalMatchInput) (*domain.EgressRequest, error) {
@@ -117,6 +121,66 @@ func TestEvaluateConsumableApproval(t *testing.T) {
 	}
 	if eval.ApprovalGrantID == nil || *eval.ApprovalGrantID != approvalID {
 		t.Fatalf("approvalGrantID = %v, want %s", eval.ApprovalGrantID, approvalID)
+	}
+}
+
+func TestEvaluateOrgAllowRule(t *testing.T) {
+	ruleID := "org-allow-1"
+	engine := policy.NewRuleEngine(stubStore{
+		rules: []domain.PolicyRule{
+			{ID: ruleID, Effect: domain.RuleEffectAllow, Scope: domain.RuleScopeOrg},
+		},
+	})
+	eval, err := engine.Evaluate(context.Background(), policy.Request{
+		AgentID: "agent",
+		UserID:  "user",
+		OrgID:   "org",
+		Method:  "GET",
+		Host:    "api.github.com",
+		Port:    443,
+		Path:    "/repos/acme/widget",
+		Scheme:  "https",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if eval.Decision != policy.DecisionAllow {
+		t.Fatalf("decision = %q, want allow", eval.Decision)
+	}
+	if eval.RuleID == nil || *eval.RuleID != ruleID {
+		t.Fatalf("ruleID = %v, want %s", eval.RuleID, ruleID)
+	}
+	if eval.ApprovalGrantID != nil {
+		t.Fatalf("expected no consumable approval grant, got %v", eval.ApprovalGrantID)
+	}
+}
+
+func TestEvaluateAgentDenyBeforeOrgAllow(t *testing.T) {
+	ruleID := "org-allow-1"
+	engine := policy.NewRuleEngine(stubStore{
+		rules: []domain.PolicyRule{
+			{ID: ruleID, Effect: domain.RuleEffectAllow, Scope: domain.RuleScopeOrg},
+		},
+		deniedPattern: true,
+	})
+	eval, err := engine.Evaluate(context.Background(), policy.Request{
+		AgentID: "agent",
+		UserID:  "user",
+		OrgID:   "org",
+		Method:  "GET",
+		Host:    "api.github.com",
+		Port:    443,
+		Path:    "/repos/acme/widget",
+		Scheme:  "https",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if eval.Decision != policy.DecisionDeny {
+		t.Fatalf("decision = %q, want deny", eval.Decision)
+	}
+	if eval.RuleID != nil {
+		t.Fatalf("ruleID = %v, want nil when agent deny pattern wins", eval.RuleID)
 	}
 }
 

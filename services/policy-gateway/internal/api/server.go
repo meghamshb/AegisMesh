@@ -52,7 +52,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/v1/requests/{id}/approve", s.handleApproveRequest)
 	s.mux.HandleFunc("POST /api/v1/requests/{id}/deny", s.handleDenyRequest)
 	s.mux.HandleFunc("POST /api/v1/rules", s.notImplemented)
-	s.mux.HandleFunc("DELETE /api/v1/rules/{id}", s.notImplemented)
+	s.mux.HandleFunc("DELETE /api/v1/rules/{id}", s.handleDeleteRule)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -173,12 +173,23 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if body.Remember && s.cfg.AdminToken == "" {
+		s.writeError(w, http.StatusForbidden, domain.ErrRememberRequiresAuth{}.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	approved, err := s.egress.ApproveOnce(ctx, id, s.approverID(r), body)
+	approved, err := s.egress.Approve(ctx, id, s.approverID(r), body)
 	if err != nil {
-		if strings.Contains(err.Error(), "phase 3") {
+		var unsupported domain.ErrRememberScopeNotSupported
+		if errors.As(err, &unsupported) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var connectBlocked domain.ErrRememberCONNECTNotAllowed
+		if errors.As(err, &connectBlocked) {
 			s.writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -268,6 +279,33 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": events})
+}
+
+func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "rule id is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := s.egress.RevokeRule(ctx, id, s.approverID(r)); err != nil {
+		var notFound domain.ErrNotFound
+		if errors.As(err, &notFound) {
+			s.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		s.logger.Error("revoke policy rule", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to revoke rule")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {

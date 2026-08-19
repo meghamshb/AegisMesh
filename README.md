@@ -63,7 +63,7 @@ If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver 
 
 ## MVP phases
 
-See the spec for acceptance criteria. **Phase 2.75 complete:** the inbox defaults to pending rows, refreshes automatically, confirms CONNECT approvals, and can be token-gated for internal pilots. Next: **Phase 3** org rules (`remember: true`).
+See the spec for acceptance criteria. **Phase 3 complete:** approve-and-remember creates org-scoped allow rules; matching retries auto-approve with `rule_id` audit linkage. **Phase 3.5 (partial):** rule dedup, safe path matching, atomic audit writes, rule revoke, CONNECT remember blocked, admin token required for remember. Next: **Phase 4** Hermes container + network lockdown.
 
 ## Development
 

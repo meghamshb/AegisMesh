@@ -17,6 +17,7 @@ const (
 
 type Request struct {
 	AgentID string
+	UserID  string
 	OrgID   string
 	Method  string
 	Host    string
@@ -45,11 +46,13 @@ func NewRuleEngine(st store.Store) *RuleEngine {
 
 func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, error) {
 	rules, err := e.store.MatchRules(ctx, store.MatchRulesInput{
-		OrgID:  req.OrgID,
-		Host:   req.Host,
-		Port:   req.Port,
-		Method: req.Method,
-		Path:   req.Path,
+		OrgID:   req.OrgID,
+		UserID:  req.UserID,
+		AgentID: req.AgentID,
+		Host:    req.Host,
+		Port:    req.Port,
+		Method:  req.Method,
+		Path:    req.Path,
 	})
 	if err != nil {
 		return Evaluation{}, err
@@ -58,12 +61,6 @@ func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, err
 	for _, rule := range rules {
 		if rule.Effect == domain.RuleEffectDeny {
 			return Evaluation{Decision: DecisionDeny, RuleID: &rule.ID}, nil
-		}
-	}
-
-	for _, rule := range rules {
-		if rule.Effect == domain.RuleEffectAllow {
-			return Evaluation{Decision: DecisionAllow, RuleID: &rule.ID}, nil
 		}
 	}
 
@@ -81,6 +78,12 @@ func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, err
 	}
 	if denied {
 		return Evaluation{Decision: DecisionDeny}, nil
+	}
+
+	for _, rule := range rules {
+		if rule.Effect == domain.RuleEffectAllow {
+			return Evaluation{Decision: DecisionAllow, RuleID: &rule.ID}, nil
+		}
 	}
 
 	approval, err := e.store.FindConsumableApproval(ctx, match)

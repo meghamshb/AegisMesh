@@ -703,8 +703,8 @@ Purpose: make the single-host team inbox credible for a small internal pilot bef
 
 ### Phase 3 — Org rules
 
-- [ ] Approve + “remember for org” creates rule
-- [ ] Second agent/user same host/path → auto-approved, logged with `rule_id`
+- [x] Approve + “remember for org” creates rule
+- [x] Second agent/user same host/path → auto-approved, logged with `rule_id`
 
 **Acceptance:** User 2 flow from sequence diagram works.
 

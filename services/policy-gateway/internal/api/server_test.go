@@ -49,11 +49,19 @@ func (stubStore) GetEgressRequest(_ context.Context, _ string) (domain.EgressReq
 	return domain.EgressRequest{}, nil
 }
 
-func (stubStore) ApproveRequestOnce(_ context.Context, _, _ string) (domain.EgressRequest, error) {
+func (stubStore) ApproveRequestOnce(_ context.Context, _, _ string, _ store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
 
-func (stubStore) DenyRequest(_ context.Context, _, _, _ string) (domain.EgressRequest, error) {
+func (stubStore) ApproveRequestWithOrgRule(_ context.Context, _, _ string, _ store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+	return domain.EgressRequest{}, domain.PolicyRule{}, nil
+}
+
+func (stubStore) DeletePolicyRule(_ context.Context, _ string, _ store.AuditInput) error {
+	return nil
+}
+
+func (stubStore) DenyRequest(_ context.Context, _, _, _ string, _ store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
 

@@ -20,11 +20,13 @@ type CreateEgressRequestInput struct {
 }
 
 type MatchRulesInput struct {
-	OrgID  string
-	Host   string
-	Port   int
-	Method string
-	Path   string
+	OrgID   string
+	UserID  string
+	AgentID string
+	Host    string
+	Port    int
+	Method  string
+	Path    string
 }
 
 type ApprovalMatchInput struct {
@@ -43,6 +45,13 @@ type ListRequestsInput struct {
 	Limit  int
 }
 
+type AuditInput struct {
+	EgressRequestID string
+	EventType       string
+	ActorID         string
+	Metadata        map[string]any
+}
+
 type Store interface {
 	Ping(ctx context.Context) error
 	ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error)
@@ -52,8 +61,10 @@ type Store interface {
 	CreateEgressRequest(ctx context.Context, in CreateEgressRequestInput) (domain.EgressRequest, error)
 	InsertAuditEvent(ctx context.Context, egressRequestID, eventType, actorID string, metadata map[string]any) error
 	GetEgressRequest(ctx context.Context, id string) (domain.EgressRequest, error)
-	ApproveRequestOnce(ctx context.Context, id, decidedBy string) (domain.EgressRequest, error)
-	DenyRequest(ctx context.Context, id, decidedBy, feedback string) (domain.EgressRequest, error)
+	ApproveRequestOnce(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, error)
+	ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error)
+	DeletePolicyRule(ctx context.Context, id string, audit AuditInput) error
+	DenyRequest(ctx context.Context, id, decidedBy, feedback string, audit AuditInput) (domain.EgressRequest, error)
 	FindConsumableApproval(ctx context.Context, in ApprovalMatchInput) (*domain.EgressRequest, error)
 	HasDeniedPattern(ctx context.Context, in ApprovalMatchInput) (bool, error)
 	MarkApprovalConsumed(ctx context.Context, id string) error

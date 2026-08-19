@@ -4,15 +4,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+ADMIN_TOKEN="${GATEWAY_ADMIN_TOKEN:-dev-local-admin-token}"
+
+api_curl() {
+  curl -fsS -H "X-Admin-Token: ${ADMIN_TOKEN}" "$@"
+}
+
 echo "Checking gateway health..."
-curl -fsS http://localhost:8080/health | grep -q '"status":"ok"'
+health_body="$(curl -fsS http://localhost:8080/health)"
+echo "$health_body" | grep -Fq '"status":"ok"'
 
 echo "Checking approval UI is served..."
-curl -fsS http://localhost:8080/ui | grep -q 'Hermes Policy Gateway'
+ui_body="$(curl -fsS http://localhost:8080/ui)"
+echo "$ui_body" | grep -Fq 'Hermes Policy Gateway'
 
-echo "Resetting request and audit history for a clean smoke run..."
+echo "Resetting request, rule, and audit history for a clean smoke run..."
 docker compose exec -T postgres psql -U hermes -d hermes_policy -c \
-  "TRUNCATE TABLE audit_events, egress_requests RESTART IDENTITY;"
+  "TRUNCATE TABLE audit_events, egress_requests, policy_rules RESTART IDENTITY CASCADE;"
+docker compose exec -T postgres psql -U hermes -d hermes_policy -c \
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_rules_dedup ON policy_rules (org_id, scope, scope_ref_id, effect, host, port, method, path_prefix);"
 
 echo "Checking hermes cannot reach postgres (network isolation)..."
 if docker compose exec -T hermes sh -c 'curl -fsS --max-time 3 postgres:5432 >/dev/null 2>&1'; then
@@ -30,7 +40,7 @@ echo "PASS: hermes has no direct internet egress"
 
 echo "Checking proxied HTTPS request is blocked and persisted..."
 docker compose exec -T hermes sh -c 'curl -sS -x http://policy-gateway:8080 --max-time 5 https://example.com >/dev/null' || true
-if ! curl -fsS "http://localhost:8080/api/v1/requests?status=pending" | grep -q '"host":"example.com"'; then
+if ! api_curl "http://localhost:8080/api/v1/requests?status=pending" | grep -q '"host":"example.com"'; then
   echo "FAIL: proxied request did not create a pending row for example.com" >&2
   exit 1
 fi
@@ -43,18 +53,18 @@ if ! grep -q '403' /tmp/phase2-github-blocked.log; then
   cat /tmp/phase2-github-blocked.log >&2
   exit 1
 fi
-if ! curl -fsS "http://localhost:8080/api/v1/requests?status=pending" | grep -q '"host":"api.github.com"'; then
+if ! api_curl "http://localhost:8080/api/v1/requests?status=pending" | grep -q '"host":"api.github.com"'; then
   echo "FAIL: GitHub API block did not create a pending row" >&2
   exit 1
 fi
 
-request_id="$(curl -fsS "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="api.github.com"]; print(items[-1]["id"] if items else "")')"
+request_id="$(api_curl "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="api.github.com"]; print(items[-1]["id"] if items else "")')"
 if [ -z "$request_id" ]; then
   echo "FAIL: could not find pending request for api.github.com" >&2
   exit 1
 fi
 
-curl -fsS -X POST "http://localhost:8080/api/v1/requests/${request_id}/approve" \
+api_curl -X POST "http://localhost:8080/api/v1/requests/${request_id}/approve" \
   -H 'Content-Type: application/json' \
   -d '{}' | grep -q '"status":"approved"'
 
@@ -72,12 +82,12 @@ if ! grep -q '403' /tmp/phase2-deny-blocked.log; then
   cat /tmp/phase2-deny-blocked.log >&2
   exit 1
 fi
-deny_request_id="$(curl -fsS "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="httpbin.org"]; print(items[-1]["id"] if items else "")')"
+deny_request_id="$(api_curl "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="httpbin.org"]; print(items[-1]["id"] if items else "")')"
 if [ -z "$deny_request_id" ]; then
   echo "FAIL: could not find pending request for httpbin.org" >&2
   exit 1
 fi
-curl -fsS -X POST "http://localhost:8080/api/v1/requests/${deny_request_id}/deny" \
+api_curl -X POST "http://localhost:8080/api/v1/requests/${deny_request_id}/deny" \
   -H 'Content-Type: application/json' \
   -d '{"feedback":"blocked in smoke test"}' | grep -q '"status":"denied"'
 docker compose exec -T hermes sh -c 'curl -sS -x http://policy-gateway:8080 --max-time 10 https://httpbin.org/get >/dev/null' >/tmp/phase2-deny-retry.log 2>&1 || true
@@ -88,4 +98,61 @@ if ! grep -q '403' /tmp/phase2-deny-retry.log; then
 fi
 echo "PASS: denied destination remains blocked on retry"
 
-echo "Phase 2 smoke checks passed"
+echo "Checking approve-and-remember creates org rule and auto-approves retry..."
+docker compose exec -T hermes sh -c 'curl -sS -x http://policy-gateway:8080 --max-time 10 http://jsonplaceholder.typicode.com/todos/1 >/dev/null' >/tmp/phase3-org-blocked.log 2>&1 || true
+org_request_id="$(api_curl "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="jsonplaceholder.typicode.com"]; print(items[-1]["id"] if items else "")')"
+if [ -z "$org_request_id" ]; then
+  echo "FAIL: jsonplaceholder request did not create a pending row" >&2
+  cat /tmp/phase3-org-blocked.log >&2
+  exit 1
+fi
+
+api_curl -X POST "http://localhost:8080/api/v1/requests/${org_request_id}/approve" \
+  -H 'Content-Type: application/json' \
+  -d '{"remember":true,"scope":"org"}' | grep -q '"status":"approved"'
+
+if ! api_curl "http://localhost:8080/api/v1/rules" | grep -q '"host":"jsonplaceholder.typicode.com"'; then
+  echo "FAIL: org allow rule was not created" >&2
+  exit 1
+fi
+
+json_body="$(docker compose exec -T hermes sh -c 'curl -fsS -x http://policy-gateway:8080 --max-time 15 http://jsonplaceholder.typicode.com/todos/1')"
+if [ -z "$json_body" ]; then
+  echo "FAIL: jsonplaceholder retry failed after org rule approval" >&2
+  exit 1
+fi
+
+if ! api_curl "http://localhost:8080/api/v1/requests?status=auto_approved" | grep -q '"host":"jsonplaceholder.typicode.com"'; then
+  echo "FAIL: retry did not create auto_approved row with org rule" >&2
+  exit 1
+fi
+if ! api_curl "http://localhost:8080/api/v1/requests?status=auto_approved" | grep -q '"rule_id"'; then
+  echo "FAIL: auto_approved row missing rule_id" >&2
+  exit 1
+fi
+echo "PASS: org rule auto-approved matching retry with rule_id"
+
+echo "Checking CONNECT remember is rejected..."
+docker compose exec -T hermes sh -c 'curl -sS -x http://policy-gateway:8080 --max-time 10 https://example.org/ >/dev/null' >/tmp/phase3-connect-blocked.log 2>&1 || true
+connect_request_id="$(api_curl "http://localhost:8080/api/v1/requests?status=pending" | python3 -c 'import json,sys; items=[i for i in json.load(sys.stdin)["items"] if i["host"]=="example.org" and i["method"]=="CONNECT"]; print(items[-1]["id"] if items else "")')"
+if [ -z "$connect_request_id" ]; then
+  echo "FAIL: could not find pending CONNECT request for example.org" >&2
+  exit 1
+fi
+connect_code="$(curl -sS -o /tmp/phase3-connect-remember.body -w '%{http_code}' -X POST "http://localhost:8080/api/v1/requests/${connect_request_id}/approve" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"remember":true,"scope":"org"}')"
+if [ "$connect_code" != "400" ]; then
+  echo "FAIL: CONNECT remember should return 400, got ${connect_code}" >&2
+  cat /tmp/phase3-connect-remember.body >&2
+  exit 1
+fi
+if ! grep -q 'not allowed for CONNECT' /tmp/phase3-connect-remember.body; then
+  echo "FAIL: expected CONNECT remember rejection message" >&2
+  cat /tmp/phase3-connect-remember.body >&2
+  exit 1
+fi
+echo "PASS: CONNECT remember rejected"
+
+echo "Phase 2 and Phase 3 smoke checks passed"

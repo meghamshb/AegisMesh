@@ -68,6 +68,7 @@ func (s *EgressService) RecordOutbound(
 	req policy.Request,
 ) (policy.Decision, domain.EgressRequest, error) {
 	req.AgentID = identity.AgentID
+	req.UserID = identity.UserID
 	req.OrgID = identity.OrgID
 
 	eval, err := s.engine.Evaluate(ctx, req)

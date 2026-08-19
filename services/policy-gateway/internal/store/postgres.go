@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/meghamshb2006/ACP-For-Hermes-Agents/services/policy-gateway/internal/domain"
 )
@@ -105,9 +106,19 @@ func (p *Postgres) MatchRules(ctx context.Context, in MatchRulesInput) ([]domain
 		  AND host = $2
 		  AND port = $3
 		  AND (method = '*' OR method = $4)
-		  AND $5 LIKE path_prefix || '%'
+		  AND starts_with($5, path_prefix)
+		  AND (
+		    length($5) = length(path_prefix)
+		    OR substring($5 from length(path_prefix) + 1 for 1) = '/'
+		  )
 		  AND (expires_at IS NULL OR expires_at > NOW())
-	`, in.OrgID, in.Host, in.Port, in.Method, in.Path)
+		  AND (
+		    (scope = 'org' AND scope_ref_id = $1)
+		    OR (scope = 'user' AND scope_ref_id = $6)
+		    OR (scope = 'agent' AND scope_ref_id = $7)
+		  )
+		ORDER BY created_at ASC
+	`, in.OrgID, in.Host, in.Port, in.Method, in.Path, in.UserID, in.AgentID)
 	if err != nil {
 		return nil, fmt.Errorf("match policy rules: %w", err)
 	}
@@ -155,12 +166,16 @@ func (p *Postgres) CreateEgressRequest(ctx context.Context, in CreateEgressReque
 }
 
 func (p *Postgres) InsertAuditEvent(ctx context.Context, egressRequestID, eventType, actorID string, metadata map[string]any) error {
+	return p.insertAuditEvent(ctx, p.pool, egressRequestID, eventType, actorID, metadata)
+}
+
+func (p *Postgres) insertAuditEvent(ctx context.Context, exec queryExecutor, egressRequestID, eventType, actorID string, metadata map[string]any) error {
 	payload, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("marshal audit metadata: %w", err)
 	}
 
-	_, err = p.pool.Exec(ctx, `
+	_, err = exec.Exec(ctx, `
 		INSERT INTO audit_events (egress_request_id, event_type, actor_id, metadata_json)
 		VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, $4::jsonb)
 	`, nullIfEmpty(egressRequestID), eventType, actorID, string(payload))
@@ -168,6 +183,10 @@ func (p *Postgres) InsertAuditEvent(ctx context.Context, egressRequestID, eventT
 		return fmt.Errorf("insert audit event: %w", err)
 	}
 	return nil
+}
+
+type queryExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
 func (p *Postgres) GetEgressRequest(ctx context.Context, id string) (domain.EgressRequest, error) {
@@ -188,8 +207,14 @@ func (p *Postgres) GetEgressRequest(ctx context.Context, id string) (domain.Egre
 	return req, nil
 }
 
-func (p *Postgres) ApproveRequestOnce(ctx context.Context, id, decidedBy string) (domain.EgressRequest, error) {
-	row := p.pool.QueryRow(ctx, `
+func (p *Postgres) ApproveRequestOnce(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.EgressRequest{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE egress_requests
 		SET status = 'approved', decided_at = NOW(), decided_by = $2
 		WHERE id = $1 AND status = 'pending'
@@ -208,11 +233,133 @@ func (p *Postgres) ApproveRequestOnce(ctx context.Context, id, decidedBy string)
 		}
 		return domain.EgressRequest{}, fmt.Errorf("approve egress request: %w", err)
 	}
+
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, enrichRequestAuditMetadata(audit.Metadata, req)); err != nil {
+		return domain.EgressRequest{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.EgressRequest{}, fmt.Errorf("commit approve-once: %w", err)
+	}
 	return req, nil
 }
 
-func (p *Postgres) DenyRequest(ctx context.Context, id, decidedBy, feedback string) (domain.EgressRequest, error) {
-	row := p.pool.QueryRow(ctx, `
+func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.EgressRequest{}, domain.PolicyRule{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var pending domain.EgressRequest
+	var pendingStatus string
+	err = tx.QueryRow(ctx, `
+		SELECT id, agent_id, user_id, org_id, method, host, port, path, scheme,
+		       status, rule_id, requested_at, decided_at, decided_by, error_message, consumed_at
+		FROM egress_requests
+		WHERE id = $1
+		FOR UPDATE
+	`, id).Scan(
+		&pending.ID,
+		&pending.AgentID,
+		&pending.UserID,
+		&pending.OrgID,
+		&pending.Method,
+		&pending.Host,
+		&pending.Port,
+		&pending.Path,
+		&pending.Scheme,
+		&pendingStatus,
+		&pending.RuleID,
+		&pending.RequestedAt,
+		&pending.DecidedAt,
+		&pending.DecidedBy,
+		&pending.ErrorMessage,
+		&pending.ConsumedAt,
+	)
+	if err != nil {
+		if isNoRows(err) {
+			return domain.EgressRequest{}, domain.PolicyRule{}, domain.ErrNotFound{Resource: "egress_request", ID: id}
+		}
+		return domain.EgressRequest{}, domain.PolicyRule{}, fmt.Errorf("load pending request: %w", err)
+	}
+
+	parsedStatus, err := domain.ParseRequestStatus(pendingStatus)
+	if err != nil {
+		return domain.EgressRequest{}, domain.PolicyRule{}, err
+	}
+	pending.Status = parsedStatus
+	if pending.Status != domain.RequestStatusPending {
+		return domain.EgressRequest{}, domain.PolicyRule{}, domain.ErrRequestNotPending{ID: id, Status: pending.Status}
+	}
+
+	var rule domain.PolicyRule
+	rule, err = p.findOrInsertOrgAllowRuleTx(ctx, tx, pending, decidedBy)
+	if err != nil {
+		return domain.EgressRequest{}, domain.PolicyRule{}, err
+	}
+
+	row := tx.QueryRow(ctx, `
+		UPDATE egress_requests
+		SET status = 'approved', decided_at = NOW(), decided_by = $2, rule_id = $3
+		WHERE id = $1 AND status = 'pending'
+		RETURNING id, agent_id, user_id, org_id, method, host, port, path, scheme,
+		          status, rule_id, requested_at, decided_at, decided_by, error_message, consumed_at
+	`, id, decidedBy, rule.ID)
+
+	approved, err := scanEgressRequestRow(row)
+	if err != nil {
+		return domain.EgressRequest{}, domain.PolicyRule{}, fmt.Errorf("approve egress request with org rule: %w", err)
+	}
+
+	audit.Metadata = enrichRequestAuditMetadata(audit.Metadata, approved)
+	audit.Metadata["rule_id"] = rule.ID
+	audit.Metadata["path_prefix"] = rule.PathPrefix
+
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return domain.EgressRequest{}, domain.PolicyRule{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.EgressRequest{}, domain.PolicyRule{}, fmt.Errorf("commit org rule approval: %w", err)
+	}
+
+	return approved, rule, nil
+}
+
+func (p *Postgres) DeletePolicyRule(ctx context.Context, id string, audit AuditInput) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `DELETE FROM policy_rules WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete policy rule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound{Resource: "policy_rule", ID: id}
+	}
+
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit rule revoke: %w", err)
+	}
+	return nil
+}
+
+func (p *Postgres) DenyRequest(ctx context.Context, id, decidedBy, feedback string, audit AuditInput) (domain.EgressRequest, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.EgressRequest{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE egress_requests
 		SET status = 'denied',
 		    decided_at = NOW(),
@@ -234,7 +381,106 @@ func (p *Postgres) DenyRequest(ctx context.Context, id, decidedBy, feedback stri
 		}
 		return domain.EgressRequest{}, fmt.Errorf("deny egress request: %w", err)
 	}
+
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, enrichRequestAuditMetadata(audit.Metadata, req)); err != nil {
+		return domain.EgressRequest{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.EgressRequest{}, fmt.Errorf("commit deny: %w", err)
+	}
 	return req, nil
+}
+
+func enrichRequestAuditMetadata(metadata map[string]any, req domain.EgressRequest) map[string]any {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["host"] = req.Host
+	metadata["port"] = req.Port
+	metadata["method"] = req.Method
+	metadata["path"] = req.Path
+	return metadata
+}
+
+func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pending domain.EgressRequest, decidedBy string) (domain.PolicyRule, error) {
+	var rule domain.PolicyRule
+	var scope string
+	var effect string
+	err := tx.QueryRow(ctx, `
+		INSERT INTO policy_rules (
+			org_id, scope, scope_ref_id, effect, host, port, method, path_prefix, created_by
+		) VALUES ($1, 'org', $1, 'allow', $2, $3, $4, $5, $6)
+		ON CONFLICT (org_id, scope, scope_ref_id, effect, host, port, method, path_prefix)
+		DO NOTHING
+		RETURNING id, org_id, scope, scope_ref_id, effect, host, port, method,
+		          path_prefix, created_at, created_by, expires_at
+	`, pending.OrgID, pending.Host, pending.Port, pending.Method, pending.Path, decidedBy).Scan(
+		&rule.ID,
+		&rule.OrgID,
+		&scope,
+		&rule.ScopeRefID,
+		&effect,
+		&rule.Host,
+		&rule.Port,
+		&rule.Method,
+		&rule.PathPrefix,
+		&rule.CreatedAt,
+		&rule.CreatedBy,
+		&rule.ExpiresAt,
+	)
+	if err == nil {
+		return finishPolicyRuleScan(rule, scope, effect)
+	}
+	if !isNoRows(err) {
+		return domain.PolicyRule{}, fmt.Errorf("insert org allow rule: %w", err)
+	}
+
+	row := tx.QueryRow(ctx, `
+		SELECT id, org_id, scope, scope_ref_id, effect, host, port, method,
+		       path_prefix, created_at, created_by, expires_at
+		FROM policy_rules
+		WHERE org_id = $1
+		  AND scope = 'org'
+		  AND scope_ref_id = $1
+		  AND effect = 'allow'
+		  AND host = $2
+		  AND port = $3
+		  AND method = $4
+		  AND path_prefix = $5
+	`, pending.OrgID, pending.Host, pending.Port, pending.Method, pending.Path)
+
+	if err := row.Scan(
+		&rule.ID,
+		&rule.OrgID,
+		&scope,
+		&rule.ScopeRefID,
+		&effect,
+		&rule.Host,
+		&rule.Port,
+		&rule.Method,
+		&rule.PathPrefix,
+		&rule.CreatedAt,
+		&rule.CreatedBy,
+		&rule.ExpiresAt,
+	); err != nil {
+		return domain.PolicyRule{}, fmt.Errorf("load existing org allow rule: %w", err)
+	}
+	return finishPolicyRuleScan(rule, scope, effect)
+}
+
+func finishPolicyRuleScan(rule domain.PolicyRule, scope, effect string) (domain.PolicyRule, error) {
+	parsedScope, err := parseRuleScope(scope)
+	if err != nil {
+		return domain.PolicyRule{}, err
+	}
+	parsedEffect, err := parseRuleEffect(effect)
+	if err != nil {
+		return domain.PolicyRule{}, err
+	}
+	rule.Scope = parsedScope
+	rule.Effect = parsedEffect
+	return rule, nil
 }
 
 func (p *Postgres) FindConsumableApproval(ctx context.Context, in ApprovalMatchInput) (*domain.EgressRequest, error) {

@@ -37,7 +37,7 @@
 <body>
   <header>
     <h1>Hermes Policy Gateway</h1>
-    <p>Team inbox for outbound approvals. Phase 2.75 adds token-gated admin access, pending-first loading, reviewer attribution, refresh polling, and safer CONNECT approval flow.</p>
+    <p>Team inbox for outbound approvals. Phase 3 adds org-wide allow rules so repeat destinations auto-approve for everyone in the org.</p>
   </header>
   <main>
     <section id="auth-card" class="panel auth-card hidden">
@@ -99,7 +99,7 @@
       </div>
     </section>
     <section id="tab-rules" class="hidden">
-      <div class="panel"><div class="panel-header"><h2 class="section-title">Rules</h2><p class="section-subtitle">Current allow and deny rules. Rule authoring remains a Phase 3 feature.</p></div><div class="panel-body table-wrap" id="rules-content"></div></div>
+      <div class="panel"><div class="panel-header"><h2 class="section-title">Rules</h2><p class="section-subtitle">Org allow/deny rules created by approve-and-remember or future manual authoring.</p></div><div class="panel-body table-wrap" id="rules-content"></div></div>
     </section>
     <section id="tab-audit" class="hidden">
       <div class="panel"><div class="panel-header"><h2 class="section-title">Audit</h2><p class="section-subtitle">Latest decision trail. This view intentionally shows the newest 100 events until pagination lands.</p></div><div class="panel-body table-wrap" id="audit-content"></div></div>
@@ -115,6 +115,21 @@
     <div class="modal-actions" style="margin-top:1rem">
       <button type="button" class="ghost" data-close-modal="approve-modal">Cancel</button>
       <button type="button" id="confirm-approve" class="primary">Approve once</button>
+    </div>
+  </div></div>
+
+  <div id="remember-modal" class="modal-backdrop"><div class="modal">
+    <h2 class="section-title">Approve and remember for org</h2>
+    <div id="remember-modal-body" class="banner"></div>
+    <div class="warning-box">
+      <strong>Org-wide allow rule:</strong> future requests from any agent in this org that match the same host, port, method, and path prefix will auto-approve and stay audited.
+    </div>
+    <div class="warning-box hidden" id="remember-connect-warning">
+      <strong>CONNECT warning:</strong> remembering a CONNECT approval creates a host-level tunnel rule for the entire org. Review carefully.
+    </div>
+    <div class="modal-actions" style="margin-top:1rem">
+      <button type="button" class="ghost" data-close-modal="remember-modal">Cancel</button>
+      <button type="button" id="confirm-approve-org" class="primary">Approve + remember for org</button>
     </div>
   </div></div>
 
@@ -187,6 +202,9 @@
         delete headers['Content-Type'];
       }
       const response = await fetch(url, Object.assign({}, options, { headers }));
+      if (response.status === 204) {
+        return null;
+      }
       const body = await response.json().catch(() => ({}));
       if (response.status === 401) {
         state.authRequired = true;
@@ -344,8 +362,12 @@
         ? '<div class="warning-box"><strong>HTTPS tunnel scope:</strong> this approval allows a CONNECT tunnel to the destination host for this agent. Review carefully before approving.</div>'
         : '';
       const approvalHint = request.status === 'pending'
-        ? '<div class="hint">Phase 2.75 uses a confirmation dialog before approval. Phase 3 will extend this area with a remember-for-org flow.</div>'
+        ? '<div class="hint">Approve once grants a single retry. Approve + remember creates an org allow rule for matching future traffic.</div>'
         : '<div class="hint">If another reviewer already acted, refresh the inbox to see the latest decision state.</div>';
+      const rememberDisabled = request.status !== 'pending' || request.method === 'CONNECT';
+      const rememberTitle = request.method === 'CONNECT'
+        ? ' title="CONNECT tunnels cannot be remembered for org; use approve once"'
+        : '';
       detailContentEl.innerHTML = `
         <div><div class="pill ${escapeHtml(request.status)}">${escapeHtml(request.status)}</div><div class="hint">Request ID: <span class="mono">${escapeHtml(request.id)}</span></div></div>
         ${connectWarning}
@@ -365,7 +387,7 @@
         </div>
         <div class="detail-actions">
           <button type="button" class="primary" data-detail-action="approve" ${request.status !== 'pending' ? 'disabled' : ''}>Approve once</button>
-          <button type="button" class="ghost" disabled title="Phase 3">Approve + remember for org</button>
+          <button type="button" class="ghost" data-detail-action="approve-org" ${rememberDisabled ? 'disabled' : ''}${rememberTitle}>Approve + remember for org</button>
           <button type="button" class="danger" data-detail-action="deny" ${request.status !== 'pending' ? 'disabled' : ''}>Deny</button>
         </div>
         ${approvalHint}`;
@@ -376,8 +398,8 @@
         rulesContentEl.innerHTML = '<div class="empty">No rules exist yet.</div>';
         return;
       }
-      const rows = state.rules.map((rule) => `<tr><td><span class="pill ${escapeHtml(rule.effect)}">${escapeHtml(rule.effect)}</span></td><td class="mono">${escapeHtml(rule.scope)}</td><td class="mono">${escapeHtml(rule.host)}:${rule.port}</td><td class="mono">${escapeHtml(rule.method)}</td><td class="mono">${escapeHtml(rule.path_prefix)}</td><td class="mono">${escapeHtml(rule.scope_ref_id)}</td><td class="mono">${escapeHtml(formatTime(rule.created_at))}</td></tr>`).join('');
-      rulesContentEl.innerHTML = `<table><thead><tr><th>Effect</th><th>Scope</th><th>Destination</th><th>Method</th><th>Path prefix</th><th>Scope ref</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+      const rows = state.rules.map((rule) => `<tr><td><span class="pill ${escapeHtml(rule.effect)}">${escapeHtml(rule.effect)}</span></td><td class="mono">${escapeHtml(rule.scope)}</td><td class="mono">${escapeHtml(rule.host)}:${rule.port}</td><td class="mono">${escapeHtml(rule.method)}</td><td class="mono">${escapeHtml(rule.path_prefix)}</td><td class="mono">${escapeHtml(rule.created_by)}</td><td class="mono">${escapeHtml(formatTime(rule.created_at))}</td><td><button type="button" class="danger" data-revoke-rule="${escapeHtml(rule.id)}">Revoke</button></td></tr>`).join('');
+      rulesContentEl.innerHTML = `<table><thead><tr><th>Effect</th><th>Scope</th><th>Destination</th><th>Method</th><th>Path prefix</th><th>Created by</th><th>Created</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     function renderAudit() {
@@ -400,8 +422,18 @@
     function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
     async function approveOnce(id) {
-      const body = await apiFetch(`/api/v1/requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) });
-      return body;
+      return apiFetch(`/api/v1/requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) });
+    }
+
+    async function approveRememberForOrg(id) {
+      return apiFetch(`/api/v1/requests/${id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ remember: true, scope: 'org' }),
+      });
+    }
+
+    async function revokeRule(id) {
+      return apiFetch(`/api/v1/rules/${id}`, { method: 'DELETE' });
     }
 
     async function denyRequest(id) {
@@ -451,6 +483,23 @@
       await refreshActiveTab();
     });
 
+    rulesContentEl.addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-revoke-rule]');
+      if (!button) return;
+      const ruleId = button.dataset.revokeRule;
+      if (!window.confirm(`Revoke org rule ${ruleId}? Future matching traffic will require approval again.`)) {
+        return;
+      }
+      try {
+        await revokeRule(ruleId);
+        state.rules = [];
+        await loadRules();
+        setStatus('Rule revoked.', 'ok');
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    });
+
     requestsContentEl.addEventListener('click', async (event) => {
       const row = event.target.closest('tr[data-id]');
       if (!row) return;
@@ -469,6 +518,10 @@
         document.getElementById('approve-modal-body').innerHTML = `Approve <span class="mono">${escapeHtml(state.selectedRequest.method)}</span> to <span class="mono">${escapeHtml(state.selectedRequest.host)}:${state.selectedRequest.port}${escapeHtml(state.selectedRequest.path)}</span> for agent <span class="mono">${escapeHtml(state.selectedRequest.agent_id)}</span>?`;
         document.getElementById('connect-warning').classList.toggle('hidden', state.selectedRequest.method !== 'CONNECT');
         openModal('approve-modal');
+      } else if (button.dataset.detailAction === 'approve-org') {
+        document.getElementById('remember-modal-body').innerHTML = `Create an org allow rule for <span class="mono">${escapeHtml(state.selectedRequest.method)}</span> to <span class="mono">${escapeHtml(state.selectedRequest.host)}:${state.selectedRequest.port}${escapeHtml(state.selectedRequest.path)}</span> and approve this request?`;
+        document.getElementById('remember-connect-warning').classList.toggle('hidden', state.selectedRequest.method !== 'CONNECT');
+        openModal('remember-modal');
       } else {
         document.getElementById('deny-reason').value = 'policy_violation';
         document.getElementById('deny-feedback').value = '';
@@ -483,6 +536,20 @@
         await approveOnce(state.selectedRequestId);
         await refreshActiveTab();
         setStatus('Approve-once recorded successfully.', 'ok');
+      } catch (err) {
+        await refreshActiveTab();
+        setStatus(err.message, 'error');
+      }
+    });
+    document.getElementById('confirm-approve-org').addEventListener('click', async () => {
+      closeModal('remember-modal');
+      try {
+        await approveRememberForOrg(state.selectedRequestId);
+        await refreshActiveTab();
+        if (state.activeTab !== 'rules') {
+          state.rules = [];
+        }
+        setStatus('Org allow rule created and request approved.', 'ok');
       } catch (err) {
         await refreshActiveTab();
         setStatus(err.message, 'error');
