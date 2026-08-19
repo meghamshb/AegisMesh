@@ -1,107 +1,161 @@
 # Clearance
 
-Outbound policy for AI agents — an egress gateway and approval console so Hermes agents in Docker cannot reach the internet without logging, human approval, and optional org-scoped allow rules.
+**Outbound policy for AI agents.**
 
-- **Repo:** [meghamshb2006/clearance](https://github.com/meghamshb2006/clearance)
-- **Spec:** [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md)
-
-## Phase status
-
-| Phase | Status | Notes |
-|-------|--------|-------|
-| 0 Scaffold | **Done** | Compose, Makefile, this README |
-| 1 Gateway core | **Done** | HTTP(S) proxy, default deny, Postgres logging |
-| 2 Approval UI | **Done** | `/ui`, approve-once, deny, consumable retry grant |
-| 2.5 Team inbox | **Done** | React + Vite inbox; master-detail, tabs, filters |
-| 2.75 Pilot hardening | **Done** | Admin token, polling, modals, CONNECT warnings |
-| 3 Org rules | **Done** | Approve + remember for org; auto-approve with `rule_id` |
-| 3.5 Policy hardening | **Done** | POST rules, expires_at, cross-agent identity headers |
-| 3.6 UI polish | **Done** | Utilitarian React console (internal-system wireframe style) |
-| 4 Hermes + lockdown | **Done** | Real Hermes agent; terminal-tool egress smoke (REST approve in CI) |
-| 5 Hardening | **Not started** | SSO, TLS, export |
-
-Full acceptance criteria: [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md).
-
-## Architecture
+Run [Hermes](https://github.com/NousResearch/hermes-agent) in Docker. Every tool call that hits the web goes through an egress gateway. Unknown destinations are blocked until a human approves — or auto-approved when they match an org rule. Everything is logged.
 
 ```
-Developer ──► Hermes (Docker) ──HTTP_PROXY──► Policy Gateway ──► Internet APIs
-                    │                              │
-                    │                              ├──► Postgres
-                    │                              └──► Approval UI (`/ui`)
+Hermes (Docker) ──HTTP_PROXY──► Clearance gateway ──► Internet
+                                      │
+                                      ├── Postgres (audit)
+                                      └── Approval console (/ui)
 ```
 
-Hermes attaches only to the `agent` network. Postgres lives on the `data` network. The gateway joins `data`, `agent`, and `egress`, so Hermes can reach the gateway but not the database or public internet directly.
+---
+
+## Why
+
+Agents call APIs, fetch URLs, and run shell commands. On a corporate laptop, that traffic is often invisible — and hard to gate.
+
+Clearance is the missing layer: **default deny**, **human-in-the-loop approval**, **org-wide allow rules**, and a full **audit trail**. Model inference stays on a separate egress path; tool traffic is what you control.
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Default deny** | Unknown hosts return 403 until approved |
+| **Approval console** | Inbox, rules registry, audit log — embedded at `/ui` |
+| **Approve once** | One-time grant; agent retries and succeeds |
+| **Remember for org** | Teammates auto-approve matching patterns |
+| **Network lockdown** | Hermes cannot bypass the proxy (Docker + iptables) |
+| **SSRF guard** | Internal upstreams hard-denied (no approval queue) |
+| **Real Hermes runtime** | Terminal + web toolsets; Codex OAuth in pilot profile |
+
+---
+
+## Screenshots
+
+### Approval inbox
+
+Pending egress requests with approve-once, org rule, and deny actions.
+
+<p align="center">
+  <img src="docs/assets/inbox.png" alt="Clearance approval inbox" width="900">
+</p>
+
+### Org rules
+
+Persistent allow rules by host, method, and path prefix.
+
+<p align="center">
+  <img src="docs/assets/rules.png" alt="Clearance policy rules" width="900">
+</p>
+
+### Audit log
+
+Every decision logged — pending, approved, denied, auto-approved.
+
+<p align="center">
+  <img src="docs/assets/audit.png" alt="Clearance audit log" width="900">
+</p>
+
+### Agent + gateway (end-to-end)
+
+Hermes chat triggers a terminal `curl` → blocked → approve in UI → retry succeeds.
+
+<p align="center">
+  <img src="docs/assets/agent-chat.png" alt="Hermes agent blocked then approved egress" width="900">
+</p>
+
+---
 
 ## Quick start
 
+**Requirements:** Docker Desktop, Make
+
 ```bash
-docker compose down -v   # reset DB when init SQL changes
-docker compose up --build
+git clone https://github.com/meghamshb2006/Clearance.git
+cd Clearance
+cp .env.example .env
+make up
+```
+
+Open the console: [http://localhost:8080/ui](http://localhost:8080/ui)
+
+| Field | Dev default |
+|-------|-------------|
+| Admin token | `dev-local-admin-token` |
+| Approver ID | `11111111-1111-1111-1111-111111111002` |
+
+Verify:
+
+```bash
 make smoke
+curl http://localhost:8080/health
 ```
 
-If Postgres was already initialized before Phase 1 seed data was added, recreate the volume with `docker compose down -v` before `up`.
+---
 
-Verify health:
+## Pilot profile (LLM + gated tools)
+
+For Hermes chat with Codex or API keys — model egress on a separate network, tools still gated:
 
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/api/v1/requests?status=pending
-curl http://localhost:8080/api/v1/rules
-open http://localhost:8080/ui
+make up-pilot
 ```
 
-If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver identifier for review actions.
+Then inside the container:
 
-## Services
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pilot.yml exec -it hermes bash
+hermes auth add openai-codex   # or set OPENAI_API_KEY in .env
+hermes model
+hermes
+```
 
-| Service | Path | Responsibility |
-|---------|------|----------------|
-| `policy-gateway` | `services/policy-gateway/` | HTTP(S) proxy, REST API, embedded approval UI at `/ui` |
-| `hermes` | `services/hermes/` | Hermes Agent runtime (NousResearch); tool egress via gateway |
-| `postgres` | `deploy/postgres/init/` | Schema bootstrap |
+Full walkthrough: [`docs/runbooks/phase41-pilot-demo.md`](docs/runbooks/phase41-pilot-demo.md)
 
-## Branch workflow
+**Demo tip:** use `example.com` for inbox demos. Avoid `httpbin.org` after `make smoke` — the deny test leaves a standing block for that host.
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Default |
-| `feat/*` | Features |
-| `docs/*` | Documentation |
-| `chore/*` | Tooling and scaffold |
-
-## MVP phases
-
-See the spec for full acceptance criteria and open items.
-
-**Next priority:** Phase 4.1 pilot demo (`make up-pilot`) then Phase 5 hardening.
+---
 
 ## Development
 
 ```bash
-make ui-build   # build React inbox into gateway embed dir
-make ui-dev     # Vite dev server (proxies API to :8080)
-make up         # docker compose up --build
-make up-pilot   # Phase 4.1: model egress + Hermes chat (see docs/runbooks/phase41-pilot-demo.md)
-make smoke      # network isolation checks (requires running stack)
-make test       # ui-build + go test ./... in policy-gateway
+make ui-build      # embed React console into gateway
+make ui-dev        # Vite dev server → :8080
+make test          # go test ./...
+make smoke         # E2E proxy + lockdown checks (stack must be running)
+make down-pilot    # tear down pilot stack
 ```
 
-Environment variables are documented in [`.env.example`](.env.example).
+Environment variables: [`.env.example`](.env.example)
 
-## Layout
+Architecture, API, and acceptance criteria: [`docs/specs/hermes-policy-gateway.md`](docs/specs/hermes-policy-gateway.md)
 
-```
-services/approval-ui/          React approval inbox (Vite)
-services/policy-gateway/internal/
-  api/      control-plane HTTP handlers
-  app/      wiring + proxy/api dispatch
-  config/   env configuration
-  domain/   shared types
-  policy/   evaluation engine
-  proxy/    data-plane handler
-  service/  orchestration between API and store
-  store/    postgres persistence
-  ui/       embedded React build (dist/)
-```
+---
+
+## Stack
+
+| Component | Path |
+|-----------|------|
+| Policy gateway (Go) | `services/policy-gateway/` |
+| Approval UI (React) | `services/approval-ui/` |
+| Hermes runtime | `services/hermes/` |
+| Postgres schema | `deploy/postgres/init/` |
+
+Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Does not require NemoHermes, OpenShell, or a LAP fork.
+
+---
+
+## Status
+
+Phases 0–4.1 complete (gateway, inbox, org rules, Hermes lockdown, pilot profile). Phase 5 (SSO, TLS, export) not started.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
