@@ -1,4 +1,4 @@
-.PHONY: up down test smoke docker-check ui-build ui-dev test-integration
+.PHONY: up up-pilot down test smoke docker-check ui-build ui-dev test-integration
 
 docker-check:
 	@docker info >/dev/null 2>&1 || { \
@@ -16,8 +16,14 @@ ui-dev:
 up: docker-check
 	docker compose up --build
 
+up-pilot: docker-check
+	docker compose -f docker-compose.yml -f docker-compose.pilot.yml up --build
+
 down:
 	docker compose down
+
+down-pilot:
+	docker compose -f docker-compose.yml -f docker-compose.pilot.yml down
 
 test: ui-build
 	cd services/policy-gateway && go test ./...

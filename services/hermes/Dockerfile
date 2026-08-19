@@ -21,6 +21,8 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        iptables \
+        iproute2 \
         nodejs \
         npm \
         ripgrep \
@@ -42,7 +44,7 @@ RUN python -m venv /opt/hermes-venv \
 WORKDIR /app
 COPY scripts/ ./scripts/
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /app/scripts/*.py \
+RUN chmod +x /entrypoint.sh /app/scripts/*.py /app/scripts/*.sh \
     && mkdir -p /data/hermes-home /tmp/hermes-workspace
 
 ENV PYTHONPATH=/opt/hermes-agent

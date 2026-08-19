@@ -75,7 +75,7 @@ If you set `GATEWAY_ADMIN_TOKEN`, the UI/API require that token and an approver 
 
 See the spec for full acceptance criteria and open items.
 
-**Next priority:** Phase 5 — SSO, TLS, audit export, multi-tenant hardening.
+**Next priority:** Phase 4.1 pilot demo (`make up-pilot`) then Phase 5 hardening.
 
 ## Development
 
@@ -83,6 +83,7 @@ See the spec for full acceptance criteria and open items.
 make ui-build   # build React inbox into gateway embed dir
 make ui-dev     # Vite dev server (proxies API to :8080)
 make up         # docker compose up --build
+make up-pilot   # Phase 4.1: model egress + Hermes chat (see docs/runbooks/phase41-pilot-demo.md)
 make smoke      # network isolation checks (requires running stack)
 make test       # ui-build + go test ./... in policy-gateway
 ```

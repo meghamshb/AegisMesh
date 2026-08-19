@@ -894,12 +894,13 @@ Do not implement fleet until single-host MVP passes acceptance criteria.
 
 ## Next steps for a new agent session
 
-**Current branch:** `feat/phase-4-hermes` (Phases 0–4 landed here).
+**Current branch:** `feat/phase-4.1-pilot-demo` (Phase 4.1 in progress).
 
 ### Verify before new work
 
 ```bash
-docker compose down -v && docker compose up --build   # Hermes image build is slow first time
+docker compose down -v && docker compose up --build   # default stack + make smoke
+make up-pilot   # Phase 4.1 pilot: model egress + hermes chat
 make smoke
 make test   # go test ./... in policy-gateway
 open http://localhost:8080/ui
@@ -909,9 +910,16 @@ Default dev admin token: `dev-local-admin-token` (see `.env.example`).
 
 ### Recommended next work (priority order)
 
-1. **Phase 4.1 — Pilot demo path** — Option B model egress network in Compose; one LLM-driven task → tool egress → approve in `/ui` → completion; optional `web` tool smoke with provider keys.
-2. **Phase 5 — Hardening** — SSO, TLS, audit export CSV, multi-tenant orgs, persistent org-scoped deny rules.
-3. **Phase 4 supply chain (P1)** — Pin Hermes by commit SHA; slim/cached base image for CI.
+1. **Phase 4.1 — Pilot demo path** — `docker-compose.pilot.yml` + runbook landed; remaining: LLM smoke with CI keys, `web` tool smoke.
+2. **Phase 5 — Hardening** — SSO, TLS, audit export CSV, split control plane from proxy (security review C2).
+3. **Supply chain (P1)** — slim/cached Hermes base image for CI.
+
+### Phase 4.1 — Pilot demo path (in progress)
+
+- [x] `docker-compose.pilot.yml` — model-egress network + iptables allowlist (`setup-model-egress-firewall.sh`)
+- [x] Runbook: `docs/runbooks/phase41-pilot-demo.md`
+- [ ] LLM-driven automated smoke (requires provider API key)
+- [ ] `web` toolset egress smoke
 
 ### Do not start with
 
@@ -942,4 +950,5 @@ NemoHermes install, OpenShell gateway, LAP fork, fleet rollout UI, or Portfolio 
 | 2026-08-19 | Added Phase 2.75 inbox hardening scope for internal pilots |
 | 2026-08-19 | **Implementation handoff:** Phases 0–3 complete; Phase 2.5/2.75/3/3.5 status, API table, policy evaluation order, migrations, admin auth, Phase 3.6 UI polish planned |
 | 2026-08-19 | **React approval UI:** Vite app at `services/approval-ui/`, embedded via `go:embed dist/`; Phase 2.5 + 3.6 marked done |
-| 2026-08-19 | **Phase 4 Hermes runtime:** Real NousResearch/hermes-agent Docker image; terminal-tool egress smoke; gateway `0.6.0-phase4` |
+| 2026-08-19 | **Phase 4 Hermes runtime:** Real NousResearch/hermes-agent Docker image; terminal-tool egress smoke; gateway `0.6.1-phase4` |
+| 2026-08-19 | **Phase 4.1 pilot:** `docker-compose.pilot.yml`, model egress firewall, runbook |

@@ -1,0 +1,22 @@
+# Phase 4.1 pilot profile — Option B model egress (separate network + egress firewall).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.pilot.yml up --build
+# Or: make up-pilot
+
+services:
+  hermes:
+    cap_add:
+      - NET_ADMIN
+    environment:
+      MODEL_EGRESS_ENABLED: "true"
+      MODEL_EGRESS_ALLOW_HOSTS: ${MODEL_EGRESS_ALLOW_HOSTS:-api.openai.com,api.anthropic.com,openrouter.ai,auth.openai.com,chatgpt.com}
+      NO_PROXY: localhost,127.0.0.1,policy-gateway,api.openai.com,api.anthropic.com,openrouter.ai,auth.openai.com,chatgpt.com
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    networks:
+      - agent
+      - model-egress
+
+networks:
+  model-egress:
+    driver: bridge

@@ -37,6 +37,10 @@ if [ -z "${HTTP_PROXY:-}" ] || [ -z "${HTTPS_PROXY:-}" ]; then
   exit 1
 fi
 
+if [ -f /app/scripts/setup-model-egress-firewall.sh ]; then
+  /app/scripts/setup-model-egress-firewall.sh
+fi
+
 echo "Hermes agent ready (Phase 4)"
 echo "HTTP_PROXY=${HTTP_PROXY:-unset}"
 echo "HTTPS_PROXY=${HTTPS_PROXY:-unset}"

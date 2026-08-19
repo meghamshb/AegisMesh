@@ -26,4 +26,4 @@ docker compose exec -it hermes bash
 hermes doctor
 ```
 
-Model provider setup (`hermes setup`, Codex OAuth, etc.) requires **Phase 4.1 Option B** — a separate model egress network. The default Compose stack only allows tool egress through the policy gateway; Hermes cannot reach LLM APIs until that network is wired.
+Model provider setup requires the **pilot profile** (`make up-pilot`) — see [docs/runbooks/phase41-pilot-demo.md](../../docs/runbooks/phase41-pilot-demo.md). Default Compose only allows tool egress through the policy gateway.
