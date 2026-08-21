@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/api"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
@@ -137,13 +139,41 @@ func (s stubStore) GetAgent(_ context.Context, id string) (domain.Agent, error) 
 	return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
 }
 
+func (s stubStore) RegisterAgent(_ context.Context, in store.RegisterAgentInput, _ store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{ID: "new-agent-id", OrgID: in.OrgID, OwnerUserID: in.OwnerUserID, Name: in.Name, Status: "active"}, nil
+}
+
+func (s stubStore) RevokeAgent(_ context.Context, agentID string, _ store.AuditInput) (domain.Agent, error) {
+	for _, a := range s.agents {
+		if a.ID == agentID {
+			a.Status = "revoked"
+			return a, nil
+		}
+	}
+	return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: agentID}
+}
+
+func (s stubStore) CreateAgentCredential(_ context.Context, in store.CreateAgentCredentialInput, _ store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{ID: "cred-id", AgentID: in.AgentID, TokenPrefix: in.TokenPrefix, TokenHash: in.TokenHash, Status: "active"}, nil
+}
+
+func (s stubStore) RotateAgentCredential(_ context.Context, agentID string, in store.CreateAgentCredentialInput, _ store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{ID: "cred-id-2", AgentID: agentID, TokenPrefix: in.TokenPrefix, TokenHash: in.TokenHash, Status: "active"}, nil
+}
+
+func (s stubStore) GetAgentCredentialByHash(_ context.Context, _ string) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, domain.ErrNotFound{Resource: "agent_credential", ID: "token"}
+}
+
+func (s stubStore) TouchAgentCredentialLastUsed(_ context.Context, _ string) error { return nil }
+
 func TestHealthOK(t *testing.T) {
 	cfg := config.Config{
 		ServiceName:    "policy-gateway",
 		ServiceVersion: "test",
 	}
 	egress := service.NewEgress(stubStore{}, policy.NewRuleEngine(stubStore{}))
-	srv := api.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), stubStore{}, egress)
+	srv := api.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), stubStore{}, egress, identity.NewService(stubStore{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -188,7 +218,7 @@ func newDirectoryTestServer(st stubStore) *api.Server {
 		Identity:       config.AgentIdentity{OrgID: "org-1", UserID: "user-1", AgentID: "agent-1"},
 	}
 	egress := service.NewEgress(st, policy.NewRuleEngine(st))
-	return api.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), st, egress)
+	return api.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), st, egress, identity.NewService(st))
 }
 
 func TestGetCurrentOrganization(t *testing.T) {
@@ -320,5 +350,120 @@ func TestGetAgentNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRegisterAgentReturnsOneTimeToken(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	body := `{"owner_user_id":"user-1","name":"alice-macbook-hermes","metadata":{"os":"macos"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Agent      domain.Agent `json:"agent"`
+		Credential struct {
+			Token       string `json:"token"`
+			TokenPrefix string `json:"token_prefix"`
+		} `json:"credential"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Agent.Name != "alice-macbook-hermes" {
+		t.Fatalf("agent name = %q, want alice-macbook-hermes", payload.Agent.Name)
+	}
+	if !strings.HasPrefix(payload.Credential.Token, "clr_agent_") {
+		t.Fatalf("credential token = %q, want clr_agent_ prefix", payload.Credential.Token)
+	}
+	if payload.Credential.TokenPrefix == "" {
+		t.Fatal("expected a non-empty token_prefix")
+	}
+}
+
+func TestRegisterAgentRejectsUnknownOwner(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	body := `{"owner_user_id":"does-not-exist","name":"agent-x"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegisterAgentRequiresName(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	body := `{"owner_user_id":"user-1","name":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRotateAgentCredentialReturnsNewToken(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-1/credentials/rotate", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Credential struct {
+			Token string `json:"token"`
+		} `json:"credential"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.HasPrefix(payload.Credential.Token, "clr_agent_") {
+		t.Fatalf("credential token = %q, want clr_agent_ prefix", payload.Credential.Token)
+	}
+}
+
+func TestRotateAgentCredentialUnknownAgentNotFound(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/does-not-exist/credentials/rotate", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRevokeAgentMarksRevoked(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-1/revoke", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var agent domain.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &agent); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if agent.Status != "revoked" {
+		t.Fatalf("status = %q, want revoked", agent.Status)
 	}
 }

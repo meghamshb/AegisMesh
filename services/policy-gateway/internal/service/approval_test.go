@@ -76,6 +76,22 @@ func (s *approvalStore) ListAgents(context.Context, store.ListAgentsInput) ([]do
 func (s *approvalStore) GetAgent(context.Context, string) (domain.Agent, error) {
 	return domain.Agent{}, nil
 }
+func (s *approvalStore) RegisterAgent(context.Context, store.RegisterAgentInput, store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (s *approvalStore) RevokeAgent(context.Context, string, store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (s *approvalStore) CreateAgentCredential(context.Context, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (s *approvalStore) RotateAgentCredential(context.Context, string, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (s *approvalStore) GetAgentCredentialByHash(context.Context, string) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (s *approvalStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 
 func TestApproveOnceUsesOnceAuditEvent(t *testing.T) {
 	st := &approvalStore{
@@ -137,7 +153,7 @@ func (rememberStore) Ping(context.Context) error { return nil }
 func (rememberStore) ListRequests(context.Context, store.ListRequestsInput) ([]domain.EgressRequest, error) {
 	return nil, nil
 }
-func (rememberStore) ListRules(context.Context) ([]domain.PolicyRule, error) { return nil, nil }
+func (rememberStore) ListRules(context.Context) ([]domain.PolicyRule, error)       { return nil, nil }
 func (rememberStore) ListAuditEvents(context.Context) ([]domain.AuditEvent, error) { return nil, nil }
 func (rememberStore) MatchRules(context.Context, store.MatchRulesInput) ([]domain.PolicyRule, error) {
 	return nil, nil
@@ -181,7 +197,25 @@ func (rememberStore) GetUser(context.Context, string) (domain.User, error) { ret
 func (rememberStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
 	return nil, nil
 }
-func (rememberStore) GetAgent(context.Context, string) (domain.Agent, error) { return domain.Agent{}, nil }
+func (rememberStore) GetAgent(context.Context, string) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (rememberStore) RegisterAgent(context.Context, store.RegisterAgentInput, store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (rememberStore) RevokeAgent(context.Context, string, store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (rememberStore) CreateAgentCredential(context.Context, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (rememberStore) RotateAgentCredential(context.Context, string, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (rememberStore) GetAgentCredentialByHash(context.Context, string) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (rememberStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 
 func TestApproveRememberRejectsCONNECT(t *testing.T) {
 	svc := service.NewEgress(rememberStore{

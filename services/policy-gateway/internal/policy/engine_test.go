@@ -19,7 +19,7 @@ func (s stubStore) Ping(context.Context) error { return nil }
 func (s stubStore) ListRequests(context.Context, store.ListRequestsInput) ([]domain.EgressRequest, error) {
 	return nil, nil
 }
-func (s stubStore) ListRules(context.Context) ([]domain.PolicyRule, error) { return s.rules, nil }
+func (s stubStore) ListRules(context.Context) ([]domain.PolicyRule, error)       { return s.rules, nil }
 func (s stubStore) ListAuditEvents(context.Context) ([]domain.AuditEvent, error) { return nil, nil }
 func (s stubStore) MatchRules(_ context.Context, _ store.MatchRulesInput) ([]domain.PolicyRule, error) {
 	return s.rules, nil
@@ -64,7 +64,25 @@ func (s stubStore) GetUser(context.Context, string) (domain.User, error) { retur
 func (s stubStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
 	return nil, nil
 }
-func (s stubStore) GetAgent(context.Context, string) (domain.Agent, error) { return domain.Agent{}, nil }
+func (s stubStore) GetAgent(context.Context, string) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (s stubStore) RegisterAgent(context.Context, store.RegisterAgentInput, store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (s stubStore) RevokeAgent(context.Context, string, store.AuditInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
+func (s stubStore) CreateAgentCredential(context.Context, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (s stubStore) RotateAgentCredential(context.Context, string, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (s stubStore) GetAgentCredentialByHash(context.Context, string) (domain.AgentCredential, error) {
+	return domain.AgentCredential{}, nil
+}
+func (s stubStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 
 func TestEvaluatePendingWhenNoRules(t *testing.T) {
 	engine := policy.NewRuleEngine(stubStore{})

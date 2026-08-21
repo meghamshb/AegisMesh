@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
@@ -379,6 +380,65 @@ func TestGetAgentNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := pg.GetAgent(ctx, "00000000-0000-0000-0000-000000000000")
+	var notFound domain.ErrNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestAgentCredentialLifecycle(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+	svc := identity.NewService(pg)
+
+	agent, token, cred, err := svc.RegisterAgent(ctx, identity.RegisterAgentInput{
+		OrgID:       seededOrgID,
+		OwnerUserID: seededUserID,
+		Name:        "integration-test-agent-" + time.Now().Format("150405.000000000"),
+	}, seededAdminID)
+	if err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	if agent.OrgID != seededOrgID {
+		t.Fatalf("agent org_id = %q, want %q", agent.OrgID, seededOrgID)
+	}
+	if cred.TokenHash == "" || cred.TokenHash == token {
+		t.Fatal("expected a stored hash distinct from the plaintext token")
+	}
+
+	authed, err := svc.AuthenticateAgentToken(ctx, token)
+	if err != nil {
+		t.Fatalf("AuthenticateAgentToken: %v", err)
+	}
+	if authed.AgentID != agent.ID || authed.OrgID != seededOrgID || authed.OwnerUserID != seededUserID {
+		t.Fatalf("unexpected authenticated identity: %+v", authed)
+	}
+
+	newToken, _, err := svc.RotateCredential(ctx, agent.ID, seededAdminID)
+	if err != nil {
+		t.Fatalf("RotateCredential: %v", err)
+	}
+
+	if _, err := svc.AuthenticateAgentToken(ctx, token); !errors.Is(err, identity.ErrCredentialRevoked) {
+		t.Fatalf("old token error = %v, want ErrCredentialRevoked", err)
+	}
+	if _, err := svc.AuthenticateAgentToken(ctx, newToken); err != nil {
+		t.Fatalf("new token should authenticate: %v", err)
+	}
+
+	if _, err := svc.RevokeAgent(ctx, agent.ID, seededAdminID); err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+	if _, err := svc.AuthenticateAgentToken(ctx, newToken); !errors.Is(err, identity.ErrCredentialRevoked) {
+		t.Fatalf("post-revoke token error = %v, want ErrCredentialRevoked", err)
+	}
+}
+
+func TestGetAgentCredentialByHashNotFound(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.GetAgentCredentialByHash(ctx, "not-a-real-hash")
 	var notFound domain.ErrNotFound
 	if !errors.As(err, &notFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)

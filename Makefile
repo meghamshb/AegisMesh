@@ -1,4 +1,4 @@
-.PHONY: up up-pilot down test smoke docker-check ui-build ui-dev test-integration
+.PHONY: up up-pilot down test smoke docker-check ui-build ui-dev test-integration register-agent
 
 docker-check:
 	@docker info >/dev/null 2>&1 || { \
@@ -33,3 +33,6 @@ test-integration: ui-build docker-check
 
 smoke: docker-check
 	./scripts/smoke-phase0.sh
+
+register-agent:
+	./scripts/register-agent.sh $(OWNER_USER_ID) $(AGENT_NAME) $(CONTAINER_ID)

@@ -39,11 +39,11 @@ type ApprovalMatchInput struct {
 }
 
 type ListRequestsInput struct {
-	Status *domain.RequestStatus
-	Host   string
-	UserID string
+	Status  *domain.RequestStatus
+	Host    string
+	UserID  string
 	AgentID string
-	Limit  int
+	Limit   int
 }
 
 type AuditInput struct {
@@ -79,6 +79,21 @@ type ListAgentsInput struct {
 	Status string
 }
 
+type RegisterAgentInput struct {
+	OrgID       string
+	OwnerUserID string
+	Name        string
+	ContainerID *string
+	Metadata    map[string]any
+}
+
+type CreateAgentCredentialInput struct {
+	AgentID     string
+	TokenPrefix string
+	TokenHash   string
+	CreatedBy   string
+}
+
 type Store interface {
 	Ping(ctx context.Context) error
 	ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error)
@@ -101,4 +116,10 @@ type Store interface {
 	GetUser(ctx context.Context, id string) (domain.User, error)
 	ListAgents(ctx context.Context, in ListAgentsInput) ([]domain.Agent, error)
 	GetAgent(ctx context.Context, id string) (domain.Agent, error)
+	RegisterAgent(ctx context.Context, in RegisterAgentInput, audit AuditInput) (domain.Agent, error)
+	RevokeAgent(ctx context.Context, agentID string, audit AuditInput) (domain.Agent, error)
+	CreateAgentCredential(ctx context.Context, in CreateAgentCredentialInput, audit AuditInput) (domain.AgentCredential, error)
+	RotateAgentCredential(ctx context.Context, agentID string, in CreateAgentCredentialInput, audit AuditInput) (domain.AgentCredential, error)
+	GetAgentCredentialByHash(ctx context.Context, tokenHash string) (domain.AgentCredential, error)
+	TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error
 }

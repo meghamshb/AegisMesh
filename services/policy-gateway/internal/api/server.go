@@ -13,26 +13,29 @@ import (
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/ui"
 )
 
 type Server struct {
-	cfg    config.Config
-	logger *slog.Logger
-	store  store.Store
-	egress *service.EgressService
-	mux    *http.ServeMux
+	cfg      config.Config
+	logger   *slog.Logger
+	store    store.Store
+	egress   *service.EgressService
+	identity *identity.Service
+	mux      *http.ServeMux
 }
 
-func New(cfg config.Config, logger *slog.Logger, st store.Store, egress *service.EgressService) *Server {
+func New(cfg config.Config, logger *slog.Logger, st store.Store, egress *service.EgressService, identitySvc *identity.Service) *Server {
 	s := &Server{
-		cfg:    cfg,
-		logger: logger,
-		store:  st,
-		egress: egress,
-		mux:    http.NewServeMux(),
+		cfg:      cfg,
+		logger:   logger,
+		store:    st,
+		egress:   egress,
+		identity: identitySvc,
+		mux:      http.NewServeMux(),
 	}
 	s.registerRoutes()
 	ui.NewHandler().Register(s.mux)
@@ -58,6 +61,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/users/{id}", s.handleGetUser)
 	s.mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /api/v1/agents/{id}", s.handleGetAgent)
+	s.mux.HandleFunc("POST /api/v1/agents", s.handleRegisterAgent)
+	s.mux.HandleFunc("POST /api/v1/agents/{id}/credentials/rotate", s.handleRotateAgentCredential)
+	s.mux.HandleFunc("POST /api/v1/agents/{id}/revoke", s.handleRevokeAgent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -473,6 +479,134 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	agent, err := s.egress.GetAgent(ctx, id)
 	if err != nil {
 		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, agent)
+}
+
+func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	var body domain.RegisterAgentBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	body.OwnerUserID = strings.TrimSpace(body.OwnerUserID)
+	body.Name = strings.TrimSpace(body.Name)
+	if body.OwnerUserID == "" {
+		s.writeError(w, http.StatusBadRequest, "owner_user_id is required")
+		return
+	}
+	if body.Name == "" {
+		s.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// org_id is derived from the gateway's configured org, not accepted from
+	// the request body, so a caller cannot register an agent into another org.
+	owner, err := s.egress.GetUser(ctx, body.OwnerUserID)
+	if err != nil {
+		var notFound domain.ErrNotFound
+		if errors.As(err, &notFound) {
+			s.writeError(w, http.StatusBadRequest, "owner_user_id does not reference a known user")
+			return
+		}
+		s.logger.Error("register agent: look up owner", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to register agent")
+		return
+	}
+	if owner.OrgID != s.cfg.Identity.OrgID {
+		s.writeError(w, http.StatusBadRequest, "owner_user_id does not belong to this organization")
+		return
+	}
+
+	agent, token, cred, err := s.identity.RegisterAgent(ctx, identity.RegisterAgentInput{
+		OrgID:       s.cfg.Identity.OrgID,
+		OwnerUserID: body.OwnerUserID,
+		Name:        body.Name,
+		ContainerID: body.ContainerID,
+		Metadata:    body.Metadata,
+	}, s.approverID(r))
+	if err != nil {
+		s.logger.Error("register agent", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to register agent")
+		return
+	}
+
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"agent": agent,
+		"credential": map[string]any{
+			"token":        token,
+			"token_prefix": cred.TokenPrefix,
+			"created_at":   cred.CreatedAt,
+		},
+	})
+}
+
+func (s *Server) handleRotateAgentCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if _, err := s.egress.GetAgent(ctx, id); err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	token, cred, err := s.identity.RotateCredential(ctx, id, s.approverID(r))
+	if err != nil {
+		s.logger.Error("rotate agent credential", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to rotate agent credential")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": id,
+		"credential": map[string]any{
+			"token":        token,
+			"token_prefix": cred.TokenPrefix,
+			"created_at":   cred.CreatedAt,
+		},
+	})
+}
+
+func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	agent, err := s.identity.RevokeAgent(ctx, id, s.approverID(r))
+	if err != nil {
+		var notFound domain.ErrNotFound
+		if errors.As(err, &notFound) {
+			s.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		s.logger.Error("revoke agent", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to revoke agent")
 		return
 	}
 

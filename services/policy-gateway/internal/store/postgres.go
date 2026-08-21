@@ -766,6 +766,221 @@ func scanAgentRow(row pgxRow) (domain.Agent, error) {
 	return agent, nil
 }
 
+func (p *Postgres) RegisterAgent(ctx context.Context, in RegisterAgentInput, audit AuditInput) (domain.Agent, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	metadata := in.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("marshal agent metadata: %w", err)
+	}
+
+	var agentID string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO agents (org_id, actor_id, name, container_id, metadata_json)
+		VALUES ($1, $2, $3, $4, $5::jsonb)
+		RETURNING id
+	`, in.OrgID, in.OwnerUserID, in.Name, in.ContainerID, string(metadataJSON)).Scan(&agentID)
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("insert agent: %w", err)
+	}
+
+	audit.Metadata = enrichAgentAuditMetadata(audit.Metadata, agentID, in.Name)
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return domain.Agent{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Agent{}, fmt.Errorf("commit register agent: %w", err)
+	}
+
+	return p.GetAgent(ctx, agentID)
+}
+
+func (p *Postgres) RevokeAgent(ctx context.Context, agentID string, audit AuditInput) (domain.Agent, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE agents
+		SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status != 'revoked'
+	`, agentID)
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("revoke agent: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		if _, lookupErr := p.GetAgent(ctx, agentID); lookupErr != nil {
+			return domain.Agent{}, lookupErr
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_credentials
+		SET status = 'revoked', revoked_at = NOW()
+		WHERE agent_id = $1 AND status = 'active'
+	`, agentID); err != nil {
+		return domain.Agent{}, fmt.Errorf("revoke agent credentials: %w", err)
+	}
+
+	audit.Metadata = enrichAgentAuditMetadata(audit.Metadata, agentID, "")
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return domain.Agent{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Agent{}, fmt.Errorf("commit revoke agent: %w", err)
+	}
+
+	return p.GetAgent(ctx, agentID)
+}
+
+func enrichAgentAuditMetadata(metadata map[string]any, agentID, name string) map[string]any {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["agent_id"] = agentID
+	if name != "" {
+		metadata["agent_name"] = name
+	}
+	return metadata
+}
+
+func (p *Postgres) CreateAgentCredential(ctx context.Context, in CreateAgentCredentialInput, audit AuditInput) (domain.AgentCredential, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.AgentCredential{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	cred, err := p.insertAgentCredentialTx(ctx, tx, in)
+	if err != nil {
+		return domain.AgentCredential{}, err
+	}
+
+	audit.Metadata = enrichCredentialAuditMetadata(audit.Metadata, cred)
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return domain.AgentCredential{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.AgentCredential{}, fmt.Errorf("commit create agent credential: %w", err)
+	}
+	return cred, nil
+}
+
+func (p *Postgres) RotateAgentCredential(ctx context.Context, agentID string, in CreateAgentCredentialInput, audit AuditInput) (domain.AgentCredential, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.AgentCredential{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_credentials
+		SET status = 'revoked', revoked_at = NOW()
+		WHERE agent_id = $1 AND status = 'active'
+	`, agentID); err != nil {
+		return domain.AgentCredential{}, fmt.Errorf("revoke prior agent credentials: %w", err)
+	}
+
+	in.AgentID = agentID
+	cred, err := p.insertAgentCredentialTx(ctx, tx, in)
+	if err != nil {
+		return domain.AgentCredential{}, err
+	}
+
+	audit.Metadata = enrichCredentialAuditMetadata(audit.Metadata, cred)
+	if err := p.insertAuditEvent(ctx, tx, audit.EgressRequestID, audit.EventType, audit.ActorID, audit.Metadata); err != nil {
+		return domain.AgentCredential{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.AgentCredential{}, fmt.Errorf("commit rotate agent credential: %w", err)
+	}
+	return cred, nil
+}
+
+func (p *Postgres) insertAgentCredentialTx(ctx context.Context, tx pgx.Tx, in CreateAgentCredentialInput) (domain.AgentCredential, error) {
+	var cred domain.AgentCredential
+	err := tx.QueryRow(ctx, `
+		INSERT INTO agent_credentials (agent_id, token_prefix, token_hash, created_by)
+		VALUES ($1, $2, $3, NULLIF($4, '')::uuid)
+		RETURNING id, agent_id, token_prefix, token_hash, status, COALESCE(created_by::text, ''), created_at, last_used_at, revoked_at
+	`, in.AgentID, in.TokenPrefix, in.TokenHash, in.CreatedBy).Scan(
+		&cred.ID,
+		&cred.AgentID,
+		&cred.TokenPrefix,
+		&cred.TokenHash,
+		&cred.Status,
+		&cred.CreatedBy,
+		&cred.CreatedAt,
+		&cred.LastUsedAt,
+		&cred.RevokedAt,
+	)
+	if err != nil {
+		return domain.AgentCredential{}, fmt.Errorf("insert agent credential: %w", err)
+	}
+	return cred, nil
+}
+
+func enrichCredentialAuditMetadata(metadata map[string]any, cred domain.AgentCredential) map[string]any {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["agent_id"] = cred.AgentID
+	metadata["credential_id"] = cred.ID
+	metadata["token_prefix"] = cred.TokenPrefix
+	return metadata
+}
+
+func (p *Postgres) GetAgentCredentialByHash(ctx context.Context, tokenHash string) (domain.AgentCredential, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id, agent_id, token_prefix, token_hash, status, COALESCE(created_by::text, ''), created_at, last_used_at, revoked_at
+		FROM agent_credentials
+		WHERE token_hash = $1
+	`, tokenHash)
+
+	var cred domain.AgentCredential
+	if err := row.Scan(
+		&cred.ID,
+		&cred.AgentID,
+		&cred.TokenPrefix,
+		&cred.TokenHash,
+		&cred.Status,
+		&cred.CreatedBy,
+		&cred.CreatedAt,
+		&cred.LastUsedAt,
+		&cred.RevokedAt,
+	); err != nil {
+		if isNoRows(err) {
+			return domain.AgentCredential{}, domain.ErrNotFound{Resource: "agent_credential", ID: "token"}
+		}
+		return domain.AgentCredential{}, fmt.Errorf("get agent credential: %w", err)
+	}
+	return cred, nil
+}
+
+func (p *Postgres) TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE agent_credentials SET last_used_at = NOW() WHERE id = $1
+	`, credentialID)
+	if err != nil {
+		return fmt.Errorf("touch agent credential last_used_at: %w", err)
+	}
+	return nil
+}
+
 func nullIfEmpty(value string) any {
 	if value == "" {
 		return nil

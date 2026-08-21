@@ -11,6 +11,7 @@ import (
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/api"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/proxy"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
@@ -27,11 +28,12 @@ type App struct {
 func New(cfg config.Config, logger *slog.Logger, st store.Store) *App {
 	engine := policy.NewRuleEngine(st)
 	egress := service.NewEgress(st, engine)
+	identitySvc := identity.NewService(st)
 	return &App{
 		cfg:    cfg,
 		logger: logger,
 		proxy:  proxy.NewHandler(cfg.ProxyEnabled, cfg, egress, logger),
-		api:    api.New(cfg, logger, st, egress),
+		api:    api.New(cfg, logger, st, egress, identitySvc),
 	}
 }
 
