@@ -302,8 +302,22 @@ func (h *Handler) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, identity.ErrAgentRevoked), errors.Is(err, identity.ErrOrgSuspended), errors.Is(err, identity.ErrOwnerDisabled):
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 	default:
+		// Anything else is an infrastructure failure rather than a verdict on
+		// the credential - most often a distributed gateway unable to reach
+		// the control plane to resolve identity.
+		//
+		// This is reported as 503, not 500. The behaviour is already correct
+		// (no identity means no egress, so the request is refused), but a 500
+		// reads as "the gateway is broken" when what actually happened is "the
+		// gateway deliberately refused because it could not verify who you
+		// are". 503 says that, and tells a client the condition is temporary
+		// and retryable. Phase 5.12's evaluation harness relies on this
+		// distinction too: it must be able to tell a fail-closed refusal from
+		// a response that came back from the destination.
 		h.logger.Error("resolve proxy identity", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve agent identity"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "cannot verify agent identity; refusing egress",
+		})
 	}
 }
 

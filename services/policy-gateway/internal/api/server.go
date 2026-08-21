@@ -60,6 +60,12 @@ func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
+// HealthHandler exposes just the liveness endpoint, so a gateway-mode process
+// can answer container healthchecks without also serving the control plane.
+func (s *Server) HealthHandler() http.Handler {
+	return http.HandlerFunc(s.handleHealth)
+}
+
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/v1/requests", s.handleListRequests)

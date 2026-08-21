@@ -75,12 +75,29 @@ func (a *App) ControlHandler() http.Handler {
 	return a.withMiddleware(a.api.Handler())
 }
 
-// ProxyHandler serves only the data-plane egress proxy. No control-plane
-// route (users/agents/rules/requests/audit/UI) is reachable through this
-// handler (CLEARANCE_MODE=gateway) - satisfies "admin APIs are not exposed
-// on the gateway proxy listener" without needing a second admin-token check.
+// ProxyHandler serves the data-plane egress proxy, plus a liveness endpoint.
+// No control-plane route (users/agents/rules/requests/audit/UI) is reachable
+// through this handler (CLEARANCE_MODE=gateway) - satisfies "admin APIs are
+// not exposed on the gateway proxy listener" without needing a second
+// admin-token check.
+//
+// GET /health is the one exception, and it is not an admin API: a container
+// healthcheck, load balancer, or orchestrator has to be able to ask a gateway
+// whether it is alive, and health is already unauthenticated on the control
+// plane. Without it a gateway-mode process answers 400 ("not a proxy request")
+// to every probe, so anything gated on its health - including the agent
+// container that is supposed to route through it - never starts.
+//
+// The dispatch below is the same shape as Handler(): only a *non-proxy*
+// request for /health is served locally. A proxied request for
+// http://somewhere/health still has a URL host, so it is forwarded and
+// evaluated like any other egress.
 func (a *App) ProxyHandler() http.Handler {
 	return a.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !proxy.IsProxyRequest(r) && r.Method == http.MethodGet && r.URL.Path == "/health" {
+			a.api.HealthHandler().ServeHTTP(w, r)
+			return
+		}
 		a.proxy.ServeHTTP(w, r)
 	}))
 }

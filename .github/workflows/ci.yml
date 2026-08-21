@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Phase 5.12.4 splits this deliberately. The deterministic checks run on every
+# push and must stay fast and hermetic. The evaluation suite needs Docker,
+# multi-container networking, and outbound access, so it runs as its own job -
+# a slow or flaky security suite that blocks every commit gets disabled, and a
+# disabled suite protects nothing.
+#
+# No job requires a paid or external API.
+
+jobs:
+  build-and-test:
+    name: Build, vet, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: services/policy-gateway/go.sum
+
+      - name: gofmt
+        working-directory: services/policy-gateway
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: services/policy-gateway
+        run: go build ./...
+
+      - name: Vet
+        working-directory: services/policy-gateway
+        run: |
+          go vet ./...
+          go vet -tags=integration ./...
+
+      - name: Unit tests
+        working-directory: services/policy-gateway
+        run: go test ./... -count=1
+
+      # The deterministic half of the security suite: SSRF classification,
+      # redirect handling, secret hygiene, rate limiting, cross-tenant
+      # isolation. These need no containers, so they gate every commit.
+      - name: Security unit tests
+        working-directory: services/policy-gateway
+        run: |
+          # internal/ratelimit runs in full - every test in it is a security
+          # property, and its test names do not share a common keyword.
+          go test ./internal/ratelimit/ -count=1 -v
+          go test ./internal/proxy/ ./internal/api/ -count=1 -v \
+            -run 'SSRF|Redirect|Secret|QueryString|IPv6|CrossOrg|AnotherOrg|OwnOrg|Credential|Internal|Upstream|Strip'
+
+  ui-build:
+    name: Approval UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/approval-ui/package-lock.json
+      - working-directory: services/approval-ui
+        run: npm ci
+      - working-directory: services/approval-ui
+        run: npm run build
+
+  integration:
+    name: Store integration tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hermes_policy
+          POSTGRES_USER: hermes
+          POSTGRES_PASSWORD: hermes
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hermes -d hermes_policy"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: services/policy-gateway/go.sum
+
+      - name: Apply schema
+        env:
+          PGPASSWORD: hermes
+        run: |
+          for f in deploy/postgres/init/*.sql; do
+            echo "applying $f"
+            psql -h localhost -U hermes -d hermes_policy -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Integration tests
+        working-directory: services/policy-gateway
+        env:
+          TEST_POSTGRES_DSN: postgres://hermes:hermes@localhost:5432/hermes_policy?sslmode=disable
+        run: go test -tags=integration ./internal/store/ -count=1
+
+  security-evaluation:
+    name: Egress security evaluation (Docker)
+    runs-on: ubuntu-latest
+    # Not required for merge: it depends on Docker networking and outbound
+    # reachability, so a transient network fault should not read as a security
+    # regression. Failures are still surfaced in the job log and in the
+    # regenerated report.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: services/policy-gateway/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/approval-ui/package-lock.json
+
+      - name: Build UI (embedded into the gateway image)
+        working-directory: services/approval-ui
+        run: npm ci && npm run build
+
+      - name: Run evaluation
+        run: ./scripts/security/run-evaluation.sh
+
+      # The report is regenerated from the run, so a drift between the
+      # committed document and measured reality shows up as a diff.
+      - name: Report drift
+        if: always()
+        run: |
+          if ! git diff --quiet -- docs/security/egress-bypass-evaluation.md; then
+            echo "::warning::The committed evaluation report differs from this run."
+            git diff -- docs/security/egress-bypass-evaluation.md | head -80
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: egress-bypass-evaluation
+          path: docs/security/egress-bypass-evaluation.md

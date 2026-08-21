@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/app"
@@ -66,5 +67,40 @@ func TestProxyHandlerDoesNotServeControlPlaneRoutes(t *testing.T) {
 
 	if rec.Code == http.StatusOK {
 		t.Fatalf("ProxyHandler must not serve control-plane routes, got status %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// A gateway-mode process must answer container healthchecks. Without this, a
+// gateway replies 400 ("not a proxy request") to every probe, and anything
+// gated on its health - including the agent container that routes through it -
+// never starts.
+func TestProxyHandlerServesHealth(t *testing.T) {
+	a := testApp()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	a.ProxyHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /health via ProxyHandler: status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("health body = %s", rec.Body.String())
+	}
+}
+
+// Serving /health locally must not create a hole: a *proxied* request for a
+// remote /health still has a URL host, so it must be forwarded and evaluated
+// as egress rather than answered by the gateway itself.
+func TestProxyHandlerDoesNotAnswerProxiedHealthRequests(t *testing.T) {
+	a := testApp()
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/health", nil)
+	rec := httptest.NewRecorder()
+	a.ProxyHandler().ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), `"service":"policy-gateway"`) {
+		t.Fatalf("a proxied /health request was answered locally instead of being evaluated: %s",
+			rec.Body.String())
 	}
 }

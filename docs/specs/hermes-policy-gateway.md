@@ -680,7 +680,8 @@ Hermes needs LLM access. Options:
 | 5.9a Tenant-isolation hardening | **Done** | Every tenant-owned query org-scoped; cross-org test suites |
 | 5.10 Multi-gateway fleet | **Done** | Snapshot-backed evaluation, `docker-compose.fleet.yml`, `make smoke-fleet`, Gateways tab |
 | 5.11 Security hardening | **Done** | SSRF-to-control-plane fix, rate limits, credential hygiene, cross-tenant tests |
-| 5.12+ Remaining | **Not started** | Security evaluation suite, SSO, CSV export |
+| 5.12 Security evaluation suite | **Done** | `scripts/security/`, generated evaluation report, CI |
+| 5.13+ Remaining | **Not started** | Production-auth seam (SSO), final demo/release |
 
 Verify: `make smoke` from repo root (requires running stack).
 
@@ -1322,6 +1323,80 @@ returned the other tenant's agent identity.
 | SSRF tests still pass | `ssrf_test.go` plus the live fleet check |
 | Stale policy fails closed | `TestDistributedGatewayFailsClosedWhenSnapshotUnavailable` |
 | Disabled/revoked identities fail predictably | `TestRevokeAgentRejectsNewToken`, `…OrgSuspended`, `…OwnerDisabled` |
+
+---
+
+## Phase 5.12 — Security evaluation suite (implemented)
+
+The goal is to replace assertion with measurement. `scripts/security/run-evaluation.sh`
+runs every bypass attempt against a live fleet stack and *generates*
+`docs/security/egress-bypass-evaluation.md`; no outcome in that document is
+hand-written.
+
+### The claim rule
+
+§5.12.3 forbids writing "Clearance prevents all network bypasses". The renderer
+enforces this structurally: it computes the headline number from the results
+file and refuses to emit a document at all if there are no measurements. The
+README quotes that same generated number, so the two cannot drift apart
+silently.
+
+Positive controls (cases whose expected outcome is `allowed`) are excluded from
+the containment count, since letting them through is correct - otherwise the
+denominator would flatter the result.
+
+### Outcome vocabulary
+
+The distinction the suite exists to test is `blocked` versus `mediated`. Both
+are HTTP 403; only the response body separates a hard SSRF denial from a
+request parked in the approval queue. A target that is merely *mediated* when
+it should be *blocked* means an operator could approve their way to it - so
+SSRF-14 explicitly asserts that hard-denied targets never appear in the queue.
+
+### Three bugs this phase found
+
+1. **A gateway-mode process served no `/health`.** `ProxyHandler` answered 400
+   ("not a proxy request") to every probe, so the agent container - whose
+   healthcheck waits on its gateway - never started. Latent since 5.8 because
+   the fleet smoke used curl probes rather than the real agent runtime. The
+   proxy listener now serves `GET /health` for non-proxy requests only; a
+   *proxied* request for a remote `/health` is still evaluated as egress.
+2. **IPv6 literals without a port never reached the SSRF guard.**
+   `net.SplitHostPort("[::1]")` fails for want of a port, so the request was
+   refused with a parse error - safe by accident, and it meant the guard was
+   untested for the entire IPv6 address family. Now parsed and blocked on
+   merit.
+3. **Losing the control plane surfaced as HTTP 500.** When a distributed
+   gateway cannot resolve identity, it correctly refuses egress, but reported
+   it as a server error - indistinguishable from a crash. Now 503 with
+   "cannot verify agent identity; refusing egress". This also mattered for the
+   measurement: the harness was initially scoring that 500 as `allowed`.
+
+### Validating the suite itself
+
+A security suite that cannot fail proves nothing, so each guard was
+deliberately regressed to see which cases move:
+
+| Regression | Cases that failed |
+|---|---|
+| IP-range blocking disabled | 13, claim drops to 36/39 |
+| Named-host blocking disabled | **0** |
+
+The second result is reported rather than hidden. Blocking the control plane by
+name only changes behaviour when it is *publicly addressable*; in this Compose
+topology it resolves to a private address, so the IP check catches it anyway.
+That protection is covered by `TestSSRFBlocksConfiguredControlPlaneByName`
+instead. Knowing which cases a suite cannot observe is part of knowing what it
+measures.
+
+### CI
+
+Split per §5.12.4. Deterministic checks (build, vet, gofmt, unit tests, and 80
+security-specific tests) gate every commit. The Docker-based evaluation runs as
+its own non-blocking job: a slow or flaky security suite that blocks every
+commit gets disabled, and a disabled suite protects nothing. Its regenerated
+report is uploaded as an artifact, and drift from the committed version is
+surfaced as a warning. No job needs a paid or external API.
 
 ---
 

@@ -58,6 +58,21 @@ func splitHostPort(raw string, defaultPort int) (string, int, error) {
 		return "", 0, fmt.Errorf("empty host")
 	}
 
+	// A bracketed IPv6 literal with no port, e.g. "[::1]" or "[fd00::1]".
+	// net.SplitHostPort rejects this because it requires a port, which meant
+	// an IPv6 destination was refused with a parse error *before* the SSRF
+	// guard ever saw it. That was safe by accident rather than by decision -
+	// and it left the guard untested for the entire IPv6 address family. Strip
+	// the brackets and apply the scheme's default port so the address reaches
+	// the guard like any other.
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		host := raw[1 : len(raw)-1]
+		if host == "" {
+			return "", 0, fmt.Errorf("empty host")
+		}
+		return host, defaultPort, nil
+	}
+
 	if strings.Contains(raw, ":") {
 		host, portString, err := net.SplitHostPort(raw)
 		if err != nil {
