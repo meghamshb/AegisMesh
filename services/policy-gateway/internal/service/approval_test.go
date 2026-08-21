@@ -16,6 +16,10 @@ type approvalStore struct {
 	approvedWithOrg domain.EgressRequest
 	orgRule         domain.PolicyRule
 	auditEvents     []string
+	usersByID       map[string]domain.User
+	agentsByID      map[string]domain.Agent
+	lastScope       domain.RuleScope
+	lastScopeRefID  string
 }
 
 func (s *approvalStore) Ping(context.Context) error { return nil }
@@ -43,8 +47,10 @@ func (s *approvalStore) ApproveRequestOnce(_ context.Context, _, _ string, audit
 	s.auditEvents = append(s.auditEvents, audit.EventType)
 	return s.approvedOnce, nil
 }
-func (s *approvalStore) ApproveRequestWithOrgRule(_ context.Context, _, _ string, _ store.OrgRuleOptions, audit store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (s *approvalStore) ApproveRequestWithScopedRule(_ context.Context, _, _ string, scope domain.RuleScope, scopeRefID string, _ store.OrgRuleOptions, audit store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	s.auditEvents = append(s.auditEvents, audit.EventType)
+	s.lastScope = scope
+	s.lastScopeRefID = scopeRefID
 	return s.approvedWithOrg, s.orgRule, nil
 }
 func (s *approvalStore) CreatePolicyRule(_ context.Context, _ store.CreatePolicyRuleInput, _ store.AuditInput) (domain.PolicyRule, error) {
@@ -67,13 +73,25 @@ func (s *approvalStore) GetOrganization(context.Context, string) (domain.Organiz
 func (s *approvalStore) ListUsers(context.Context, store.ListUsersInput) ([]domain.User, error) {
 	return nil, nil
 }
-func (s *approvalStore) GetUser(context.Context, string) (domain.User, error) {
+func (s *approvalStore) GetUser(_ context.Context, id string) (domain.User, error) {
+	if s.usersByID != nil {
+		if u, ok := s.usersByID[id]; ok {
+			return u, nil
+		}
+		return domain.User{}, domain.ErrNotFound{Resource: "user", ID: id}
+	}
 	return domain.User{}, nil
 }
 func (s *approvalStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
 	return nil, nil
 }
-func (s *approvalStore) GetAgent(context.Context, string) (domain.Agent, error) {
+func (s *approvalStore) GetAgent(_ context.Context, id string) (domain.Agent, error) {
+	if s.agentsByID != nil {
+		if a, ok := s.agentsByID[id]; ok {
+			return a, nil
+		}
+		return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
+	}
 	return domain.Agent{}, nil
 }
 func (s *approvalStore) RegisterAgent(context.Context, store.RegisterAgentInput, store.AuditInput) (domain.Agent, error) {
@@ -171,7 +189,7 @@ func (s rememberStore) GetEgressRequest(context.Context, string) (domain.EgressR
 func (rememberStore) ApproveRequestOnce(context.Context, string, string, store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
-func (rememberStore) ApproveRequestWithOrgRule(context.Context, string, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (rememberStore) ApproveRequestWithScopedRule(context.Context, string, string, domain.RuleScope, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	return domain.EgressRequest{}, domain.PolicyRule{}, nil
 }
 func (rememberStore) CreatePolicyRule(context.Context, store.CreatePolicyRuleInput, store.AuditInput) (domain.PolicyRule, error) {
@@ -237,18 +255,85 @@ func TestApproveRememberRejectsCONNECT(t *testing.T) {
 	}
 }
 
-func TestApproveRememberRejectsNonOrgScope(t *testing.T) {
+func TestApproveRememberRejectsUnknownScope(t *testing.T) {
 	svc := service.NewEgress(&approvalStore{}, policy.NewRuleEngine(&approvalStore{}))
 
 	_, err := svc.Approve(context.Background(), "req-3", "admin-1", domain.ApproveRequestBody{
 		Remember: true,
-		Scope:    domain.RuleScopeAgent,
+		Scope:    domain.RuleScope("bogus"),
 	})
 	if err == nil {
-		t.Fatal("expected error for remember=true with scope=agent")
+		t.Fatal("expected error for remember=true with an unsupported scope")
 	}
 	var unsupported domain.ErrRememberScopeNotSupported
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("error = %v, want ErrRememberScopeNotSupported", err)
+	}
+}
+
+func TestApproveRememberAgentScopeDerivesRefFromPendingRequest(t *testing.T) {
+	st := &approvalStore{
+		approvedWithOrg: domain.EgressRequest{ID: "req-agent", Host: "api.github.com", Port: 443, Method: "GET", Path: "/zen"},
+	}
+	svc := service.NewEgress(rememberAuditStore{approvalStore: st, pending: domain.EgressRequest{
+		ID: "req-agent", Method: "GET", Host: "api.github.com", AgentID: "agent-42", UserID: "user-7", OrgID: "org-1",
+	}}, policy.NewRuleEngine(st))
+
+	approved, err := svc.Approve(context.Background(), "req-agent", "admin-1", domain.ApproveRequestBody{
+		Remember: true,
+		Scope:    domain.RuleScopeAgent,
+	})
+	if err != nil {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	if approved.ID != "req-agent" {
+		t.Fatalf("approved ID = %q, want req-agent", approved.ID)
+	}
+	if st.lastScope != domain.RuleScopeAgent || st.lastScopeRefID != "agent-42" {
+		t.Fatalf("scope/scopeRefID = %q/%q, want agent/agent-42 (derived from pending request, not client input)", st.lastScope, st.lastScopeRefID)
+	}
+	if len(st.auditEvents) != 1 || st.auditEvents[0] != "egress_approved_agent_rule" {
+		t.Fatalf("audit events = %v, want [egress_approved_agent_rule]", st.auditEvents)
+	}
+}
+
+func TestApproveRememberUserScopeDerivesRefFromPendingRequest(t *testing.T) {
+	st := &approvalStore{
+		approvedWithOrg: domain.EgressRequest{ID: "req-user", Host: "api.github.com", Port: 443, Method: "GET", Path: "/zen"},
+	}
+	svc := service.NewEgress(rememberAuditStore{approvalStore: st, pending: domain.EgressRequest{
+		ID: "req-user", Method: "GET", Host: "api.github.com", AgentID: "agent-42", UserID: "user-7", OrgID: "org-1",
+	}}, policy.NewRuleEngine(st))
+
+	_, err := svc.Approve(context.Background(), "req-user", "admin-1", domain.ApproveRequestBody{
+		Remember: true,
+		Scope:    domain.RuleScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	if st.lastScope != domain.RuleScopeUser || st.lastScopeRefID != "user-7" {
+		t.Fatalf("scope/scopeRefID = %q/%q, want user/user-7", st.lastScope, st.lastScopeRefID)
+	}
+	if len(st.auditEvents) != 1 || st.auditEvents[0] != "egress_approved_user_rule" {
+		t.Fatalf("audit events = %v, want [egress_approved_user_rule]", st.auditEvents)
+	}
+}
+
+func TestApproveRememberAgentScopeRejectsCONNECT(t *testing.T) {
+	svc := service.NewEgress(rememberStore{
+		pending: domain.EgressRequest{ID: "req-connect-agent", Method: "CONNECT", Host: "api.github.com", AgentID: "agent-42"},
+	}, policy.NewRuleEngine(rememberStore{}))
+
+	_, err := svc.Approve(context.Background(), "req-connect-agent", "admin-1", domain.ApproveRequestBody{
+		Remember: true,
+		Scope:    domain.RuleScopeAgent,
+	})
+	if err == nil {
+		t.Fatal("expected CONNECT remember rejection even at agent scope")
+	}
+	var blocked domain.ErrRememberCONNECTNotAllowed
+	if !errors.As(err, &blocked) {
+		t.Fatalf("error = %v, want ErrRememberCONNECTNotAllowed", err)
 	}
 }

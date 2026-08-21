@@ -36,7 +36,7 @@ func (s stubStore) GetEgressRequest(context.Context, string) (domain.EgressReque
 func (s stubStore) ApproveRequestOnce(context.Context, string, string, store.AuditInput) (domain.EgressRequest, error) {
 	return domain.EgressRequest{}, nil
 }
-func (s stubStore) ApproveRequestWithOrgRule(context.Context, string, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (s stubStore) ApproveRequestWithScopedRule(context.Context, string, string, domain.RuleScope, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	return domain.EgressRequest{}, domain.PolicyRule{}, nil
 }
 
@@ -234,5 +234,105 @@ func TestEvaluateDeniedPattern(t *testing.T) {
 	}
 	if eval.Decision != policy.DecisionDeny {
 		t.Fatalf("decision = %q, want deny", eval.Decision)
+	}
+}
+
+// --- Phase 5.5: scoped rule precedence matrix ---
+// Locked precedence (documented in docs/specs/hermes-policy-gateway.md):
+//  1. any matching deny wins, regardless of scope specificity
+//  2. otherwise, the most specific matching allow wins: agent > user > org
+
+func evalRequest() policy.Request {
+	return policy.Request{
+		AgentID: "agent-1",
+		UserID:  "user-1",
+		OrgID:   "org-1",
+		Method:  "GET",
+		Host:    "api.github.com",
+		Port:    443,
+		Path:    "/repos/acme/widget",
+		Scheme:  "https",
+	}
+}
+
+func TestPrecedenceMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		rules      []domain.PolicyRule
+		wantDeny   bool
+		wantRuleID string // only checked when non-empty and decision is allow
+	}{
+		{
+			name:       "org allow only",
+			rules:      []domain.PolicyRule{{ID: "org-allow", Scope: domain.RuleScopeOrg, Effect: domain.RuleEffectAllow}},
+			wantRuleID: "org-allow",
+		},
+		{
+			name:       "user allow only",
+			rules:      []domain.PolicyRule{{ID: "user-allow", Scope: domain.RuleScopeUser, Effect: domain.RuleEffectAllow}},
+			wantRuleID: "user-allow",
+		},
+		{
+			name:       "agent allow only",
+			rules:      []domain.PolicyRule{{ID: "agent-allow", Scope: domain.RuleScopeAgent, Effect: domain.RuleEffectAllow}},
+			wantRuleID: "agent-allow",
+		},
+		{
+			name: "org allow + agent deny: deny wins",
+			rules: []domain.PolicyRule{
+				{ID: "org-allow", Scope: domain.RuleScopeOrg, Effect: domain.RuleEffectAllow},
+				{ID: "agent-deny", Scope: domain.RuleScopeAgent, Effect: domain.RuleEffectDeny},
+			},
+			wantDeny: true,
+		},
+		{
+			name: "org deny + agent allow: deny still wins",
+			rules: []domain.PolicyRule{
+				{ID: "org-deny", Scope: domain.RuleScopeOrg, Effect: domain.RuleEffectDeny},
+				{ID: "agent-allow", Scope: domain.RuleScopeAgent, Effect: domain.RuleEffectAllow},
+			},
+			wantDeny: true,
+		},
+		{
+			name: "org allow + user allow + agent allow: most specific (agent) wins",
+			rules: []domain.PolicyRule{
+				{ID: "org-allow", Scope: domain.RuleScopeOrg, Effect: domain.RuleEffectAllow},
+				{ID: "user-allow", Scope: domain.RuleScopeUser, Effect: domain.RuleEffectAllow},
+				{ID: "agent-allow", Scope: domain.RuleScopeAgent, Effect: domain.RuleEffectAllow},
+			},
+			wantRuleID: "agent-allow",
+		},
+		{
+			name: "org allow + user allow (no agent rule): user wins",
+			rules: []domain.PolicyRule{
+				{ID: "org-allow", Scope: domain.RuleScopeOrg, Effect: domain.RuleEffectAllow},
+				{ID: "user-allow", Scope: domain.RuleScopeUser, Effect: domain.RuleEffectAllow},
+			},
+			wantRuleID: "user-allow",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := policy.NewRuleEngine(stubStore{rules: tc.rules})
+			eval, err := engine.Evaluate(context.Background(), evalRequest())
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if tc.wantDeny {
+				if eval.Decision != policy.DecisionDeny {
+					t.Fatalf("decision = %q, want deny", eval.Decision)
+				}
+				return
+			}
+			if eval.Decision != policy.DecisionAllow {
+				t.Fatalf("decision = %q, want allow", eval.Decision)
+			}
+			if tc.wantRuleID != "" {
+				if eval.RuleID == nil || *eval.RuleID != tc.wantRuleID {
+					t.Fatalf("ruleID = %v, want %s", eval.RuleID, tc.wantRuleID)
+				}
+			}
+		})
 	}
 }

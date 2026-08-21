@@ -70,17 +70,66 @@ func (p *Postgres) ListRequests(ctx context.Context, in ListRequestsInput) ([]do
 
 func (p *Postgres) ListRules(ctx context.Context) ([]domain.PolicyRule, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, org_id, scope, scope_ref_id, effect, host, port, method,
-		       path_prefix, created_at, created_by, expires_at
-		FROM policy_rules
-		ORDER BY created_at DESC
+		SELECT r.id, r.org_id, r.scope, r.scope_ref_id, r.effect, r.host, r.port, r.method,
+		       r.path_prefix, r.created_at, r.created_by, r.expires_at,
+		       CASE r.scope
+		         WHEN 'org' THEN COALESCE(o.name, '')
+		         WHEN 'user' THEN COALESCE(u.display_name, '')
+		         WHEN 'agent' THEN COALESCE(ag.name, '')
+		         ELSE ''
+		       END AS scope_display_name,
+		       COALESCE(creator.display_name, '') AS created_by_display_name
+		FROM policy_rules r
+		LEFT JOIN organizations o ON r.scope = 'org' AND o.id = r.scope_ref_id
+		LEFT JOIN actors u ON r.scope = 'user' AND u.id = r.scope_ref_id
+		LEFT JOIN agents ag ON r.scope = 'agent' AND ag.id = r.scope_ref_id
+		LEFT JOIN actors creator ON creator.id = r.created_by
+		ORDER BY r.created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query policy rules: %w", err)
 	}
 	defer rows.Close()
 
-	return scanPolicyRules(rows)
+	rules := make([]domain.PolicyRule, 0)
+	for rows.Next() {
+		var rule domain.PolicyRule
+		var scope, effect string
+		if err := rows.Scan(
+			&rule.ID,
+			&rule.OrgID,
+			&scope,
+			&rule.ScopeRefID,
+			&effect,
+			&rule.Host,
+			&rule.Port,
+			&rule.Method,
+			&rule.PathPrefix,
+			&rule.CreatedAt,
+			&rule.CreatedBy,
+			&rule.ExpiresAt,
+			&rule.ScopeDisplayName,
+			&rule.CreatedByDisplayName,
+		); err != nil {
+			return nil, fmt.Errorf("scan policy rule: %w", err)
+		}
+
+		parsedScope, err := parseRuleScope(scope)
+		if err != nil {
+			continue
+		}
+		parsedEffect, err := parseRuleEffect(effect)
+		if err != nil {
+			continue
+		}
+		rule.Scope = parsedScope
+		rule.Effect = parsedEffect
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate policy rules: %w", err)
+	}
+	return rules, nil
 }
 
 func (p *Postgres) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error) {
@@ -245,7 +294,7 @@ func (p *Postgres) ApproveRequestOnce(ctx context.Context, id, decidedBy string,
 	return req, nil
 }
 
-func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy string, opts OrgRuleOptions, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
+func (p *Postgres) ApproveRequestWithScopedRule(ctx context.Context, id, decidedBy string, scope domain.RuleScope, scopeRefID string, opts OrgRuleOptions, audit AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return domain.EgressRequest{}, domain.PolicyRule{}, fmt.Errorf("begin transaction: %w", err)
@@ -295,7 +344,7 @@ func (p *Postgres) ApproveRequestWithOrgRule(ctx context.Context, id, decidedBy 
 	}
 
 	var rule domain.PolicyRule
-	rule, err = p.findOrInsertOrgAllowRuleTx(ctx, tx, pending, decidedBy, opts.ExpiresAt)
+	rule, err = p.findOrInsertScopedAllowRuleTx(ctx, tx, pending, decidedBy, scope, scopeRefID, opts.ExpiresAt)
 	if err != nil {
 		return domain.EgressRequest{}, domain.PolicyRule{}, err
 	}
@@ -452,11 +501,11 @@ func enrichRuleAuditMetadata(metadata map[string]any, rule domain.PolicyRule) ma
 	return metadata
 }
 
-func (p *Postgres) findOrInsertOrgAllowRuleTx(ctx context.Context, tx pgx.Tx, pending domain.EgressRequest, decidedBy string, expiresAt *time.Time) (domain.PolicyRule, error) {
+func (p *Postgres) findOrInsertScopedAllowRuleTx(ctx context.Context, tx pgx.Tx, pending domain.EgressRequest, decidedBy string, scope domain.RuleScope, scopeRefID string, expiresAt *time.Time) (domain.PolicyRule, error) {
 	in := CreatePolicyRuleInput{
 		OrgID:      pending.OrgID,
-		Scope:      domain.RuleScopeOrg,
-		ScopeRefID: pending.OrgID,
+		Scope:      scope,
+		ScopeRefID: scopeRefID,
 		Effect:     domain.RuleEffectAllow,
 		Host:       pending.Host,
 		Port:       pending.Port,

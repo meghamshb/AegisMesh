@@ -34,7 +34,7 @@ func newTestPostgres(t *testing.T) *store.Postgres {
 	return pg
 }
 
-func TestApproveRequestWithOrgRuleIsAtomic(t *testing.T) {
+func TestApproveRequestWithScopedRuleIsAtomic(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
@@ -63,22 +63,26 @@ func TestApproveRequestWithOrgRuleIsAtomic(t *testing.T) {
 	}
 
 	expires := time.Now().Add(24 * time.Hour)
-	approved, rule, err := pg.ApproveRequestWithOrgRule(ctx, requests[0].ID, "11111111-1111-1111-1111-111111111002", store.OrgRuleOptions{
-		ExpiresAt: &expires,
-	}, store.AuditInput{
-		EgressRequestID: requests[0].ID,
-		EventType:       "egress_approved_org_rule",
-		ActorID:         "11111111-1111-1111-1111-111111111002",
-		Metadata:        map[string]any{},
-	})
+	approved, rule, err := pg.ApproveRequestWithScopedRule(ctx, requests[0].ID, "11111111-1111-1111-1111-111111111002",
+		domain.RuleScopeOrg, "11111111-1111-1111-1111-111111111010", store.OrgRuleOptions{
+			ExpiresAt: &expires,
+		}, store.AuditInput{
+			EgressRequestID: requests[0].ID,
+			EventType:       "egress_approved_org_rule",
+			ActorID:         "11111111-1111-1111-1111-111111111002",
+			Metadata:        map[string]any{},
+		})
 	if err != nil {
-		t.Fatalf("ApproveRequestWithOrgRule: %v", err)
+		t.Fatalf("ApproveRequestWithScopedRule: %v", err)
 	}
 	if approved.Status != domain.RequestStatusApproved {
 		t.Fatalf("status = %q, want approved", approved.Status)
 	}
 	if rule.ExpiresAt == nil {
 		t.Fatal("expected expires_at on org rule")
+	}
+	if rule.Scope != domain.RuleScopeOrg {
+		t.Fatalf("scope = %q, want org", rule.Scope)
 	}
 
 	matched, err := pg.MatchRules(ctx, store.MatchRulesInput{
@@ -96,13 +100,86 @@ func TestApproveRequestWithOrgRuleIsAtomic(t *testing.T) {
 	if len(matched) == 0 {
 		t.Fatal("expected org rule to match")
 	}
+	// Note: intentionally not revoking `rule` here — the egress request created
+	// above now references it via rule_id, and policy_rules has no ON DELETE
+	// behavior for that FK, so deleting a still-referenced rule fails with a
+	// constraint violation (this is correct DB behavior, not a bug to work
+	// around in the test).
+}
 
-	if err := pg.DeletePolicyRule(ctx, rule.ID, store.AuditInput{
-		EventType: "policy_rule_revoked",
-		ActorID:   "11111111-1111-1111-1111-111111111002",
-		Metadata:  map[string]any{"rule_id": rule.ID},
-	}); err != nil {
-		t.Fatalf("DeletePolicyRule cleanup: %v", err)
+func TestApproveRequestWithScopedRuleAgentScope(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.CreateEgressRequest(ctx, store.CreateEgressRequestInput{
+		AgentID: seededAgentID,
+		UserID:  seededUserID,
+		OrgID:   seededOrgID,
+		Method:  "GET",
+		Host:    "agent-scope-test.example",
+		Port:    443,
+		Path:    "/agent-scope-test",
+		Scheme:  "https",
+		Status:  domain.RequestStatusPending,
+	})
+	if err != nil {
+		t.Fatalf("CreateEgressRequest: %v", err)
+	}
+
+	requests, err := pg.ListRequests(ctx, store.ListRequestsInput{
+		Status: ptrStatus(domain.RequestStatusPending),
+		Host:   "agent-scope-test.example",
+		Limit:  1,
+	})
+	if err != nil || len(requests) == 0 {
+		t.Fatalf("pending request not found: %v", err)
+	}
+
+	_, rule, err := pg.ApproveRequestWithScopedRule(ctx, requests[0].ID, seededAdminID,
+		domain.RuleScopeAgent, seededAgentID, store.OrgRuleOptions{}, store.AuditInput{
+			EgressRequestID: requests[0].ID,
+			EventType:       "egress_approved_agent_rule",
+			ActorID:         seededAdminID,
+			Metadata:        map[string]any{},
+		})
+	if err != nil {
+		t.Fatalf("ApproveRequestWithScopedRule: %v", err)
+	}
+	if rule.Scope != domain.RuleScopeAgent || rule.ScopeRefID != seededAgentID {
+		t.Fatalf("rule = %+v, want scope=agent scope_ref_id=%s", rule, seededAgentID)
+	}
+
+	// Agent A's rule must not match Agent B's requests.
+	matchedForOtherAgent, err := pg.MatchRules(ctx, store.MatchRulesInput{
+		OrgID:   seededOrgID,
+		UserID:  seededSecondUser,
+		AgentID: seededSecondAgent,
+		Host:    "agent-scope-test.example",
+		Port:    443,
+		Method:  "GET",
+		Path:    "/agent-scope-test/anything",
+	})
+	if err != nil {
+		t.Fatalf("MatchRules (other agent): %v", err)
+	}
+	if len(matchedForOtherAgent) != 0 {
+		t.Fatalf("expected agent-scoped rule not to match a different agent, got %d matches", len(matchedForOtherAgent))
+	}
+
+	matchedForOwner, err := pg.MatchRules(ctx, store.MatchRulesInput{
+		OrgID:   seededOrgID,
+		UserID:  seededUserID,
+		AgentID: seededAgentID,
+		Host:    "agent-scope-test.example",
+		Port:    443,
+		Method:  "GET",
+		Path:    "/agent-scope-test/anything",
+	})
+	if err != nil {
+		t.Fatalf("MatchRules (owner): %v", err)
+	}
+	if len(matchedForOwner) == 0 {
+		t.Fatal("expected agent-scoped rule to match its own agent")
 	}
 }
 

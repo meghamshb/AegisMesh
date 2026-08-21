@@ -43,15 +43,31 @@ func validatePersistentAllowMethod(method string) error {
 	return nil
 }
 
-func validateScopeRef(orgID string, scope domain.RuleScope, scopeRefID string) error {
+// validateScopeRef confirms scope_ref_id names a real object that belongs to
+// the caller's own organization. This is what stops a caller from creating a
+// rule scoped to another org's user or agent even when they know its UUID.
+func (s *EgressService) validateScopeRef(ctx context.Context, orgID string, scope domain.RuleScope, scopeRefID string) error {
+	invalid := domain.ErrInvalidScopeRef{Scope: scope, ScopeRefID: scopeRefID, OrgID: orgID}
 	switch scope {
 	case domain.RuleScopeOrg:
 		if scopeRefID != orgID {
-			return domain.ErrInvalidScopeRef{Scope: scope, ScopeRefID: scopeRefID, OrgID: orgID}
+			return invalid
 		}
-	case domain.RuleScopeUser, domain.RuleScopeAgent:
+	case domain.RuleScopeUser:
 		if scopeRefID == "" {
-			return domain.ErrInvalidScopeRef{Scope: scope, ScopeRefID: scopeRefID, OrgID: orgID}
+			return invalid
+		}
+		user, err := s.store.GetUser(ctx, scopeRefID)
+		if err != nil || user.OrgID != orgID {
+			return invalid
+		}
+	case domain.RuleScopeAgent:
+		if scopeRefID == "" {
+			return invalid
+		}
+		agent, err := s.store.GetAgent(ctx, scopeRefID)
+		if err != nil || agent.OrgID != orgID {
+			return invalid
 		}
 	default:
 		return domain.InvalidEnumError{Field: "scope", Value: string(scope)}
@@ -82,7 +98,7 @@ func (s *EgressService) CreateRule(ctx context.Context, orgID, adminID string, b
 	if err := validateExpiresAt(body.ExpiresAt); err != nil {
 		return domain.PolicyRule{}, err
 	}
-	if err := validateScopeRef(orgID, body.Scope, body.ScopeRefID); err != nil {
+	if err := s.validateScopeRef(ctx, orgID, body.Scope, body.ScopeRefID); err != nil {
 		return domain.PolicyRule{}, err
 	}
 

@@ -47,18 +47,20 @@ type EgressRequest struct {
 }
 
 type PolicyRule struct {
-	ID         string     `json:"id"`
-	OrgID      string     `json:"org_id"`
-	Scope      RuleScope  `json:"scope"`
-	ScopeRefID string     `json:"scope_ref_id"`
-	Effect     RuleEffect `json:"effect"`
-	Host       string     `json:"host"`
-	Port       int        `json:"port"`
-	Method     string     `json:"method"`
-	PathPrefix string     `json:"path_prefix"`
-	CreatedAt  time.Time  `json:"created_at"`
-	CreatedBy  string     `json:"created_by"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	ID                   string     `json:"id"`
+	OrgID                string     `json:"org_id"`
+	Scope                RuleScope  `json:"scope"`
+	ScopeRefID           string     `json:"scope_ref_id"`
+	ScopeDisplayName     string     `json:"scope_display_name,omitempty"`
+	Effect               RuleEffect `json:"effect"`
+	Host                 string     `json:"host"`
+	Port                 int        `json:"port"`
+	Method               string     `json:"method"`
+	PathPrefix           string     `json:"path_prefix"`
+	CreatedAt            time.Time  `json:"created_at"`
+	CreatedBy            string     `json:"created_by"`
+	CreatedByDisplayName string     `json:"created_by_display_name,omitempty"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
 }
 
 type AuditEvent struct {
@@ -71,8 +73,8 @@ type AuditEvent struct {
 }
 
 type HealthStatus struct {
-	Status   string            `json:"status"`
-	Service  string            `json:"service"`
-	Version  string            `json:"version"`
-	Checks   map[string]string `json:"checks"`
+	Status  string            `json:"status"`
+	Service string            `json:"service"`
+	Version string            `json:"version"`
+	Checks  map[string]string `json:"checks"`
 }

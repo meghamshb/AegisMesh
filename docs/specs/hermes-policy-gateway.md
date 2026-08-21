@@ -451,25 +451,35 @@ Audit-only mode (log but allow) may exist for dev — not default for corp story
 
 ### Evaluation order (implemented in `internal/policy/engine.go`)
 
-1. **`policy_rules` deny** matches (org / user / agent scope) → block, log `denied`, attach `rule_id`.
+1. **`policy_rules` deny** matches (org / user / agent scope) → block, log `denied`, attach `rule_id`. **Any matching deny wins regardless of scope specificity** (see "Rule precedence" below) — a broader org-level deny is never overridden by a narrower agent-level allow.
 2. **Agent standing deny** — prior `denied` egress row for same agent + exact host/port/method/path → block (wins over org allow rules).
-3. **`policy_rules` allow** matches → forward, log `auto_approved`, attach `rule_id`.
+3. **`policy_rules` allow** matches → forward, log `auto_approved`, attach `rule_id`. When multiple allow rules match (e.g. an org rule and an agent rule both match the same request), the **most specific scope wins** — `agent` > `user` > `org` — purely to decide which `rule_id` is attributed/audited; the decision is `allow` either way.
 4. **Consumable approve-once** — prior `approved` row with matching pattern and `consumed_at IS NULL` → forward once, consume grant.
 5. No match → create **`pending`** record, block request, surface in UI.
 6. Human **approve once** → status `approved`; client retries; step 4 applies.
-7. Human **approve + remember** (`remember: true`, `scope: org`) → create org allow rule + status `approved`; future matching traffic hits step 3.
+7. Human **approve + remember** (`remember: true`, `scope: org | user | agent`) → create a rule scoped to the org, the requesting user, or the requesting agent (Phase 5.5); future matching traffic hits step 3.
 8. Human **deny** → standing agent-scoped deny via egress row (not yet a persistent `policy_rules` deny row).
 9. **Timeout** (if configured) → deny pending requests — **not implemented**.
 
 Path matching uses `starts_with(path, path_prefix)` with a `/` boundary check (not SQL `LIKE`, avoids `_` wildcard bugs).
 
-#### Phase 3 remember constraints (implemented)
+#### Rule precedence (locked, Phase 5.5)
 
-- **`scope: org` only** — `user` / `agent` remember rejected with 400.
-- **`remember=true` requires `GATEWAY_ADMIN_TOKEN`** — open API cannot mint org rules.
-- **CONNECT + remember blocked** — HTTPS proxy tunnels cannot become org-wide host rules; use approve-once for CONNECT.
-- **Org rules deduplicated** — unique index on `(org_id, scope, scope_ref_id, effect, host, port, method, path_prefix)`; re-remember returns existing rule.
+Given the current policy engine (`internal/policy/engine.go`) and its test suite, the locked precedence is:
+
+1. **Any matching deny wins**, independent of scope. A narrower/more-specific allow can never override a broader deny. Example: org-level `deny api.github.com` beats an agent-level `allow api.github.com` for that agent — the agent is still denied.
+2. Failing that, the **most specific matching allow wins**: `agent` scope > `user` scope > `org` scope. This only affects which rule is attributed in the audit trail (`rule_id`) when more than one allow rule matches the same request; the outcome is `allow` regardless of which one is picked.
+
+This is the safer posture recommended for a security product: a broad deny should never be quietly bypassed by a narrower allow.
+
+#### Remember-scope constraints (Phase 5.5)
+
+- **`scope: org | user | agent`** — all three are accepted. The `scope_ref_id` is always derived server-side from the pending request being approved (the request's own `org_id`/`user_id`/`agent_id`), never accepted from the client, so a caller cannot remember a rule against an org/user/agent other than the one that made the request.
+- **`remember=true` requires `GATEWAY_ADMIN_TOKEN`** — open API cannot mint rules of any scope.
+- **CONNECT + remember blocked for all scopes** — HTTPS proxy tunnels cannot become allow rules at any scope (org, user, or agent); use approve-once for CONNECT. This is unchanged from Phase 3 and deliberately not relaxed — Clearance only has hostname-level visibility into CONNECT tunnels, not path-level, so a "remembered" CONNECT rule would silently over-authorize.
+- **Rules deduplicated** — unique index on `(org_id, scope, scope_ref_id, effect, host, port, method, path_prefix)`; re-remembering returns the existing rule.
 - **Rule revoke** — `DELETE /api/v1/rules/{id}` + UI Revoke button; audit event `policy_rule_revoked`.
+- **Cross-org scope references rejected** — creating a rule with `scope: user` or `scope: agent` requires the referenced user/agent to belong to the same org as the caller; a mismatched `scope_ref_id` is rejected with 400, even if the UUID is otherwise valid.
 
 ### Rule shape (allowlist keys)
 

@@ -21,7 +21,7 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 		if scope == "" {
 			scope = domain.RuleScopeOrg
 		}
-		if scope != domain.RuleScopeOrg {
+		if scope != domain.RuleScopeOrg && scope != domain.RuleScopeUser && scope != domain.RuleScopeAgent {
 			return domain.EgressRequest{}, domain.ErrRememberScopeNotSupported{Scope: scope}
 		}
 
@@ -29,6 +29,9 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 		if err != nil {
 			return domain.EgressRequest{}, err
 		}
+		// CONNECT tunnels only give Clearance hostname-level visibility, never
+		// path-level, so a remembered CONNECT rule would silently over-authorize
+		// at every scope. Keep this blocked regardless of scope (Phase 5.5.5).
 		if pending.Method == "CONNECT" {
 			return domain.EgressRequest{}, domain.ErrRememberCONNECTNotAllowed{Host: pending.Host}
 		}
@@ -36,11 +39,24 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 			return domain.EgressRequest{}, err
 		}
 
-		approved, _, err := s.store.ApproveRequestWithOrgRule(ctx, requestID, adminID, store.OrgRuleOptions{
+		// scope_ref_id is always derived from the pending request itself, never
+		// accepted from the client: a caller can only remember a rule against
+		// the org/user/agent that actually made this request.
+		var scopeRefID string
+		switch scope {
+		case domain.RuleScopeOrg:
+			scopeRefID = pending.OrgID
+		case domain.RuleScopeUser:
+			scopeRefID = pending.UserID
+		case domain.RuleScopeAgent:
+			scopeRefID = pending.AgentID
+		}
+
+		approved, _, err := s.store.ApproveRequestWithScopedRule(ctx, requestID, adminID, scope, scopeRefID, store.OrgRuleOptions{
 			ExpiresAt: body.ExpiresAt,
 		}, store.AuditInput{
 			EgressRequestID: requestID,
-			EventType:       "egress_approved_org_rule",
+			EventType:       rememberEventType(scope),
 			ActorID:         adminID,
 			Metadata: map[string]any{
 				"scope": scope,
@@ -57,6 +73,17 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 			"scope": body.Scope,
 		},
 	})
+}
+
+func rememberEventType(scope domain.RuleScope) string {
+	switch scope {
+	case domain.RuleScopeAgent:
+		return "egress_approved_agent_rule"
+	case domain.RuleScopeUser:
+		return "egress_approved_user_rule"
+	default:
+		return "egress_approved_org_rule"
+	}
 }
 
 func (s *EgressService) Deny(ctx context.Context, requestID, adminID, feedback string) (domain.EgressRequest, error) {

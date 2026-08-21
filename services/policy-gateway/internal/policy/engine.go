@@ -80,10 +80,8 @@ func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, err
 		return Evaluation{Decision: DecisionDeny}, nil
 	}
 
-	for _, rule := range rules {
-		if rule.Effect == domain.RuleEffectAllow {
-			return Evaluation{Decision: DecisionAllow, RuleID: &rule.ID}, nil
-		}
+	if allow := mostSpecificAllow(rules); allow != nil {
+		return Evaluation{Decision: DecisionAllow, RuleID: &allow.ID}, nil
 	}
 
 	approval, err := e.store.FindConsumableApproval(ctx, match)
@@ -95,6 +93,36 @@ func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, err
 	}
 
 	return Evaluation{Decision: DecisionPending}, nil
+}
+
+// mostSpecificAllow returns the allow-effect rule with the highest scope
+// specificity (agent > user > org). Any matching deny already short-circuits
+// evaluation before this is called, so this only decides which rule_id gets
+// attributed when more than one allow rule matches the same request.
+func mostSpecificAllow(rules []domain.PolicyRule) *domain.PolicyRule {
+	var best *domain.PolicyRule
+	for i := range rules {
+		if rules[i].Effect != domain.RuleEffectAllow {
+			continue
+		}
+		if best == nil || scopeSpecificity(rules[i].Scope) > scopeSpecificity(best.Scope) {
+			best = &rules[i]
+		}
+	}
+	return best
+}
+
+func scopeSpecificity(scope domain.RuleScope) int {
+	switch scope {
+	case domain.RuleScopeAgent:
+		return 3
+	case domain.RuleScopeUser:
+		return 2
+	case domain.RuleScopeOrg:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func DecisionToStatus(decision Decision) (domain.RequestStatus, error) {

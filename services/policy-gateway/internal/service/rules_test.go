@@ -70,6 +70,88 @@ func TestCreateRuleRejectsCONNECT(t *testing.T) {
 	}
 }
 
+func TestCreateRuleAcceptsUserScopeInSameOrg(t *testing.T) {
+	st := &createRuleStore{}
+	st.usersByID = map[string]domain.User{
+		"user-1": {ID: "user-1", OrgID: "org-1"},
+	}
+	svc := service.NewEgress(st, policy.NewRuleEngine(st))
+
+	_, err := svc.CreateRule(context.Background(), "org-1", "admin-1", domain.CreatePolicyRuleBody{
+		Scope:      domain.RuleScopeUser,
+		ScopeRefID: "user-1",
+		Effect:     domain.RuleEffectAllow,
+		Host:       "huggingface.co",
+	})
+	if err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+}
+
+func TestCreateRuleRejectsUserScopeFromDifferentOrg(t *testing.T) {
+	st := &createRuleStore{}
+	st.usersByID = map[string]domain.User{
+		"user-from-other-org": {ID: "user-from-other-org", OrgID: "org-2"},
+	}
+	svc := service.NewEgress(st, policy.NewRuleEngine(st))
+
+	_, err := svc.CreateRule(context.Background(), "org-1", "admin-1", domain.CreatePolicyRuleBody{
+		Scope:      domain.RuleScopeUser,
+		ScopeRefID: "user-from-other-org",
+		Effect:     domain.RuleEffectAllow,
+		Host:       "huggingface.co",
+	})
+	if err == nil {
+		t.Fatal("expected cross-org user scope_ref_id to be rejected")
+	}
+	var invalid domain.ErrInvalidScopeRef
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %v, want ErrInvalidScopeRef", err)
+	}
+}
+
+func TestCreateRuleRejectsAgentScopeFromDifferentOrg(t *testing.T) {
+	st := &createRuleStore{}
+	st.agentsByID = map[string]domain.Agent{
+		"agent-from-other-org": {ID: "agent-from-other-org", OrgID: "org-2"},
+	}
+	svc := service.NewEgress(st, policy.NewRuleEngine(st))
+
+	_, err := svc.CreateRule(context.Background(), "org-1", "admin-1", domain.CreatePolicyRuleBody{
+		Scope:      domain.RuleScopeAgent,
+		ScopeRefID: "agent-from-other-org",
+		Effect:     domain.RuleEffectAllow,
+		Host:       "huggingface.co",
+	})
+	if err == nil {
+		t.Fatal("expected cross-org agent scope_ref_id to be rejected")
+	}
+	var invalid domain.ErrInvalidScopeRef
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %v, want ErrInvalidScopeRef", err)
+	}
+}
+
+func TestCreateRuleRejectsUnknownScopeRef(t *testing.T) {
+	st := &createRuleStore{}
+	st.usersByID = map[string]domain.User{} // non-nil but empty: lookups miss -> ErrNotFound
+	svc := service.NewEgress(st, policy.NewRuleEngine(st))
+
+	_, err := svc.CreateRule(context.Background(), "org-1", "admin-1", domain.CreatePolicyRuleBody{
+		Scope:      domain.RuleScopeUser,
+		ScopeRefID: "does-not-exist",
+		Effect:     domain.RuleEffectAllow,
+		Host:       "huggingface.co",
+	})
+	if err == nil {
+		t.Fatal("expected unknown scope_ref_id to be rejected")
+	}
+	var invalid domain.ErrInvalidScopeRef
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %v, want ErrInvalidScopeRef", err)
+	}
+}
+
 func TestApproveRememberRejectsPastExpiresAt(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	svc := service.NewEgress(rememberStore{
