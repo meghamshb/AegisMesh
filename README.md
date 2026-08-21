@@ -152,7 +152,16 @@ Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Does not
 
 ## Status
 
-Phases 0–4.1 complete (gateway, inbox, org rules, Hermes lockdown, pilot profile). Phase 5 (SSO, TLS, export) not started.
+Phases 0–4.1 complete (gateway, inbox, org rules, Hermes lockdown, pilot profile).
+
+Phases 5.2–5.9 complete: multi-user schema, agent credentials, authenticated
+proxy identity, scoped policy semantics, control-plane management APIs, admin
+UI, control/data-plane split, and gateway registration with versioned policy
+snapshots. A follow-up hardening pass org-scoped every tenant-owned query and
+added cross-org test suites — see "Tenant isolation (locked contract)" in
+[docs/specs/hermes-policy-gateway.md](docs/specs/hermes-policy-gateway.md).
+
+Still open: SSO / per-caller admin auth, TLS, rate limits, CSV audit export.
 
 ---
 

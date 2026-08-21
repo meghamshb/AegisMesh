@@ -8,6 +8,10 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
+// Every method here takes the caller's orgID as its first argument and passes
+// it straight to the store, which filters on it. Handlers must source that
+// value from the authenticated principal, never from request input.
+
 func (s *EgressService) GetOrganization(ctx context.Context, id string) (domain.Organization, error) {
 	return s.store.GetOrganization(ctx, id)
 }
@@ -18,16 +22,21 @@ type ListUsersOptions struct {
 	Offset int
 }
 
-func (s *EgressService) ListUsers(ctx context.Context, opts ListUsersOptions) ([]domain.User, error) {
+func (s *EgressService) ListUsers(ctx context.Context, orgID string, opts ListUsersOptions) ([]domain.User, error) {
 	status := strings.TrimSpace(opts.Status)
 	if status != "" && status != "active" && status != "disabled" {
 		return nil, domain.InvalidEnumError{Field: "status", Value: status}
 	}
-	return s.store.ListUsers(ctx, store.ListUsersInput{Status: status, Limit: opts.Limit, Offset: opts.Offset})
+	return s.store.ListUsers(ctx, store.ListUsersInput{
+		OrgID:  orgID,
+		Status: status,
+		Limit:  opts.Limit,
+		Offset: opts.Offset,
+	})
 }
 
-func (s *EgressService) GetUser(ctx context.Context, id string) (domain.User, error) {
-	return s.store.GetUser(ctx, id)
+func (s *EgressService) GetUser(ctx context.Context, orgID, id string) (domain.User, error) {
+	return s.store.GetUser(ctx, orgID, id)
 }
 
 var validRoles = map[string]bool{
@@ -57,7 +66,7 @@ func (s *EgressService) CreateUser(ctx context.Context, orgID string, body domai
 	})
 }
 
-func (s *EgressService) UpdateUser(ctx context.Context, id string, body domain.UpdateUserBody) (domain.User, error) {
+func (s *EgressService) UpdateUser(ctx context.Context, orgID, id string, body domain.UpdateUserBody) (domain.User, error) {
 	in := store.UpdateUserInput{Email: body.Email}
 	if body.DisplayName != nil {
 		trimmed := strings.TrimSpace(*body.DisplayName)
@@ -81,7 +90,7 @@ func (s *EgressService) UpdateUser(ctx context.Context, id string, body domain.U
 		in.Status = &status
 	}
 
-	return s.store.UpdateUser(ctx, id, in)
+	return s.store.UpdateUser(ctx, orgID, id, in)
 }
 
 type ListAgentsOptions struct {
@@ -91,12 +100,13 @@ type ListAgentsOptions struct {
 	Offset int
 }
 
-func (s *EgressService) ListAgents(ctx context.Context, opts ListAgentsOptions) ([]domain.Agent, error) {
+func (s *EgressService) ListAgents(ctx context.Context, orgID string, opts ListAgentsOptions) ([]domain.Agent, error) {
 	status := strings.TrimSpace(opts.Status)
 	if status != "" && status != "active" && status != "revoked" {
 		return nil, domain.InvalidEnumError{Field: "status", Value: status}
 	}
 	return s.store.ListAgents(ctx, store.ListAgentsInput{
+		OrgID:  orgID,
 		UserID: strings.TrimSpace(opts.UserID),
 		Status: status,
 		Limit:  opts.Limit,
@@ -104,11 +114,11 @@ func (s *EgressService) ListAgents(ctx context.Context, opts ListAgentsOptions) 
 	})
 }
 
-func (s *EgressService) GetAgent(ctx context.Context, id string) (domain.Agent, error) {
-	return s.store.GetAgent(ctx, id)
+func (s *EgressService) GetAgent(ctx context.Context, orgID, id string) (domain.Agent, error) {
+	return s.store.GetAgent(ctx, orgID, id)
 }
 
-func (s *EgressService) UpdateAgent(ctx context.Context, id string, body domain.UpdateAgentBody) (domain.Agent, error) {
+func (s *EgressService) UpdateAgent(ctx context.Context, orgID, id string, body domain.UpdateAgentBody) (domain.Agent, error) {
 	in := store.UpdateAgentInput{ContainerID: body.ContainerID, Metadata: body.Metadata}
 	if body.Name != nil {
 		trimmed := strings.TrimSpace(*body.Name)
@@ -117,15 +127,15 @@ func (s *EgressService) UpdateAgent(ctx context.Context, id string, body domain.
 		}
 		in.Name = &trimmed
 	}
-	return s.store.UpdateAgent(ctx, id, in)
+	return s.store.UpdateAgent(ctx, orgID, id, in)
 }
 
 func (s *EgressService) ListGateways(ctx context.Context, orgID string) ([]domain.Gateway, error) {
 	return s.store.ListGateways(ctx, orgID)
 }
 
-func (s *EgressService) GetGateway(ctx context.Context, id string) (domain.Gateway, error) {
-	return s.store.GetGateway(ctx, id)
+func (s *EgressService) GetGateway(ctx context.Context, orgID, id string) (domain.Gateway, error) {
+	return s.store.GetGateway(ctx, orgID, id)
 }
 
 func (s *EgressService) GetOrgPolicyVersion(ctx context.Context, orgID string) (int64, error) {

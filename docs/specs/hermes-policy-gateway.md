@@ -669,7 +669,16 @@ Hermes needs LLM access. Options:
 | 3.5 Policy hardening | **Done** | POST rules, expires_at, identity headers, integration tests |
 | 3.6 UI polish | **Done** | Utilitarian internal-system wireframe styling; credentials modal |
 | 4 Hermes + lockdown | **Done** | Real Hermes image; terminal-tool E2E smoke |
-| 5 Hardening | **Not started** | SSO, TLS, export, multi-tenant |
+| 5.2 Multi-user schema | **Done** | `organizations`, FK-backed `actors`/`agents` |
+| 5.3 Agent credentials | **Done** | `clr_agent_...` issue/rotate/revoke, hash-only storage |
+| 5.4 Authenticated proxy identity | **Done** | `GATEWAY_AGENT_AUTH_MODE=token` |
+| 5.5 Scoped policy semantics | **Done** | deny-wins, most-specific-allow, org/user/agent scopes |
+| 5.6 Control-plane management APIs | **Done** | User CRUD, pagination, filters, `Principal` scaffold |
+| 5.7 Admin UI | **Done** | Users/Agents tabs, scoped-rule creation |
+| 5.8 Control/data-plane split | **Done** | `CLEARANCE_MODE=all\|control\|gateway` |
+| 5.9 Gateway registration + policy sync | **Done** | `clr_gateway_...`, versioned snapshots, fail-closed |
+| 5.9a Tenant-isolation hardening | **Done** | Every tenant-owned query org-scoped; cross-org test suites |
+| 5.10+ Remaining hardening | **Not started** | SSO, TLS, rate limits, CSV export |
 
 Verify: `make smoke` from repo root (requires running stack).
 
@@ -742,8 +751,13 @@ This phase is about **UX and product shape**, not changing the core product deci
 
 The richer inbox is only useful if each request can be attributed clearly.
 
-- One Hermes container = one `agent_id` **implemented** via `GATEWAY_*_ID` env vars
-- The data model includes `actors`, `agents`, `user_id`, `agent_id`, and `org_id`; the UI exposes raw IDs today
+- One Hermes container = one `agent_id` — originally via `GATEWAY_*_ID` env
+  vars; since Phase 5.4 identity is derived from the agent's own authenticated
+  credential when `GATEWAY_AGENT_AUTH_MODE=token`, and the env vars are the
+  static-mode fallback
+- The data model includes `actors`, `agents`, `user_id`, `agent_id`, and
+  `org_id`. Raw IDs were exposed in the UI through Phase 3.6; since Phase 5.7
+  the inbox, rules, users, and agents views resolve them to display names
 - For a true multi-user setup on one gateway, requests must be attributable to the originating user/agent pair
 - Do not fake multi-user by only reskinning the UI; identity and approval semantics matter more than visuals
 
@@ -842,12 +856,20 @@ Purpose: make `/ui` credible for corp reviewers — utilitarian wireframe aesthe
 
 ### Phase 5 — Hardening (post-MVP)
 
-- [ ] SSO / proper admin auth (replace token-in-UI)
+- [ ] SSO / proper admin auth (replace token-in-UI) — still open; see the
+      tenancy note below for what this unblocks
 - [ ] TLS, timeouts, rate limits
-- [ ] Audit export CSV, pagination
-- [ ] Multi-tenant orgs
-- [ ] Persistent org-scoped **deny** rules (today: agent-scoped deny via egress rows only)
-- [ ] Per-request identity (`X-Agent-Id`) for multi-agent on one host
+- [ ] Audit export CSV
+- [x] Pagination on every list endpoint (Phase 5.6) — default 50, max 200
+- [x] Multi-tenant orgs (Phases 5.2–5.9 + tenant-isolation hardening) — real
+      `organizations` table, FK-backed `actors`/`agents`, and every
+      tenant-owned query filtered by `org_id`
+- [x] Persistent org-scoped **deny** rules (Phase 5.5) — `effect: deny` is
+      accepted at `org`, `user`, and `agent` scope, and deny wins over any
+      matching allow regardless of specificity
+- [x] Per-request identity for multi-agent on one host (Phase 5.4) — derived
+      from an authenticated `clr_agent_...` credential via
+      `GATEWAY_AGENT_AUTH_MODE=token`, not from a client-supplied header
 
 ---
 
@@ -1009,6 +1031,79 @@ hot evaluation path also requires deciding how standing-deny/approve-once
 request-history lookups work for a gateway that no longer holds a direct DB
 connection - that's exactly the kind of decision the multi-gateway fleet
 demo (5.10) will make concrete, rather than guessing at it here.
+
+---
+
+## Tenant isolation (locked contract)
+
+Everything below is enforced and covered by tests; treat it as the rule for any
+new endpoint or query.
+
+### Where org comes from
+
+An organization is **always** derived from the authenticated caller, never from
+a request body, path, or query parameter:
+
+| Surface | Source of `org_id` |
+|---|---|
+| Control plane (`/api/v1/*`) | `Principal.OrgID`, via `requirePrincipal` |
+| Fleet internal (`/api/internal/v1/*`) | `AuthenticatedGateway.OrgID`, from the gateway credential |
+| Data plane (proxy) | The authenticated agent's resolved identity |
+
+There is no endpoint that accepts an `org_id` as input. `handlePolicySnapshot`
+returning the credential's org rather than a requested one is the pattern, not
+an exception.
+
+### Where org is enforced
+
+Every tenant-owned query in `internal/store` filters on `org_id` — list
+endpoints via an `OrgID` field on their input struct, by-id lookups and
+mutations via an explicit `orgID` argument. The contract is written out at the
+top of `internal/store/store.go`, and `storetest.Stub` keeps every test fake in
+step with it.
+
+Four methods are deliberately *not* org-scoped, each for a reason that makes an
+org predicate meaningless:
+
+- `GetOrganization` — the id *is* the org.
+- `GetAgentCredentialByHash` / `GetGatewayByCredentialHash` — the secret hash is
+  the authenticator, and these run before any caller org exists.
+- `ResolveAgentForAuth` — the credential-to-agent hop that *produces* the org.
+- `TouchAgentLastSeen` / `TouchAgentCredentialLastUsed` — post-authentication
+  bookkeeping on the caller's own verified row.
+
+### Cross-org access returns 404, not 403
+
+A row that exists but belongs to another organization is reported exactly as a
+row that does not exist. A distinct `403` would confirm the id is real and turn
+every by-id endpoint into a cross-tenant existence oracle. This is why
+`ApproveRequestOnce` re-reads through the org-scoped `GetEgressRequest` before
+deciding between "not found" and "not pending".
+
+### Audit events are org-owned
+
+`audit_events` gained a real `org_id` column (migration `010`); it is required
+on insert and filtered on read. Before that the table had no org column at all,
+so the audit console had nothing to filter on.
+
+### Known limitation
+
+`Principal.OrgID` is currently populated from the process-wide
+`GATEWAY_ORG_ID`, because control-plane callers still authenticate with a single
+shared admin token. So one deployment still serves one org **in practice** —
+but isolation is now enforced at the query layer rather than assumed, so
+introducing real per-caller authentication (Phase 5.13) is a change to how
+`currentPrincipal` is built, not a re-audit of every SQL statement.
+
+### Test coverage
+
+- `internal/api/crossorg_test.go` — handler-level: an admin of org-1 against a
+  store holding org-2 rows. Lists must not leak, by-id reads and every mutation
+  must 404, credential rotation must mint nothing, and rules must not be
+  scopeable to another org's subject.
+- `internal/store/crossorg_integration_test.go` (`-tags=integration`) — the same
+  properties asserted against real Postgres, so the SQL itself is proven to
+  carry the predicate rather than relying on handlers passing the right value.
 
 ---
 

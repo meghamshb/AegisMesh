@@ -67,6 +67,7 @@ type PolicyRule struct {
 
 type AuditEvent struct {
 	ID              string         `json:"id"`
+	OrgID           string         `json:"org_id"`
 	EgressRequestID *string        `json:"egress_request_id,omitempty"`
 	EventType       string         `json:"event_type"`
 	ActorID         *string        `json:"actor_id,omitempty"`

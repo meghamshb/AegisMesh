@@ -14,6 +14,7 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store/storetest"
 )
 
 func testLogger() *slog.Logger {
@@ -23,6 +24,7 @@ func testLogger() *slog.Logger {
 // fakeIdentityStore is a minimal identity.Store fake for exercising the
 // proxy's token-mode identity resolution without a real database.
 type fakeIdentityStore struct {
+	storetest.Stub
 	agentsByCredential map[string]domain.Agent // keyed by token hash
 	credentials        map[string]domain.AgentCredential
 	orgs               map[string]domain.Organization
@@ -50,10 +52,10 @@ func (f *fakeIdentityStore) addAgent(tokenHash string, agent domain.Agent, credS
 func (f *fakeIdentityStore) RegisterAgent(context.Context, store.RegisterAgentInput, store.AuditInput) (domain.Agent, error) {
 	return domain.Agent{}, nil
 }
-func (f *fakeIdentityStore) RevokeAgent(context.Context, string, store.AuditInput) (domain.Agent, error) {
+func (f *fakeIdentityStore) RevokeAgent(context.Context, string, string, store.AuditInput) (domain.Agent, error) {
 	return domain.Agent{}, nil
 }
-func (f *fakeIdentityStore) GetAgent(_ context.Context, id string) (domain.Agent, error) {
+func (f *fakeIdentityStore) ResolveAgentForAuth(_ context.Context, id string) (domain.Agent, error) {
 	for _, a := range f.agentsByCredential {
 		if a.ID == id {
 			return a, nil
@@ -64,7 +66,7 @@ func (f *fakeIdentityStore) GetAgent(_ context.Context, id string) (domain.Agent
 func (f *fakeIdentityStore) CreateAgentCredential(context.Context, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
 	return domain.AgentCredential{}, nil
 }
-func (f *fakeIdentityStore) RotateAgentCredential(context.Context, string, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
+func (f *fakeIdentityStore) RotateAgentCredential(context.Context, string, string, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
 	return domain.AgentCredential{}, nil
 }
 func (f *fakeIdentityStore) GetAgentCredentialByHash(_ context.Context, tokenHash string) (domain.AgentCredential, error) {
@@ -76,20 +78,20 @@ func (f *fakeIdentityStore) GetAgentCredentialByHash(_ context.Context, tokenHas
 }
 func (f *fakeIdentityStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 func (f *fakeIdentityStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
-func (f *fakeIdentityStore) GetUser(_ context.Context, id string) (domain.User, error) {
+func (f *fakeIdentityStore) GetUser(_ context.Context, orgID, id string) (domain.User, error) {
 	return domain.User{ID: id, Status: "active"}, nil
 }
 
 func (f *fakeIdentityStore) RegisterGateway(_ context.Context, in store.RegisterGatewayInput) (domain.Gateway, error) {
 	return domain.Gateway{}, nil
 }
-func (f *fakeIdentityStore) GetGateway(_ context.Context, id string) (domain.Gateway, error) {
+func (f *fakeIdentityStore) GetGateway(_ context.Context, orgID, id string) (domain.Gateway, error) {
 	return domain.Gateway{}, nil
 }
 func (f *fakeIdentityStore) GetGatewayByCredentialHash(_ context.Context, hash string) (domain.Gateway, error) {
 	return domain.Gateway{}, nil
 }
-func (f *fakeIdentityStore) UpdateGatewayHeartbeat(_ context.Context, id string, _ store.GatewayHeartbeatInput) (domain.Gateway, error) {
+func (f *fakeIdentityStore) UpdateGatewayHeartbeat(_ context.Context, orgID, id string, _ store.GatewayHeartbeatInput) (domain.Gateway, error) {
 	return domain.Gateway{}, nil
 }
 
