@@ -14,6 +14,7 @@ import (
 type fakeStore struct {
 	agents      map[string]domain.Agent
 	credentials map[string]domain.AgentCredential // keyed by token hash
+	orgStatus   string                            // empty means "active"
 	nextID      int
 }
 
@@ -105,6 +106,18 @@ func (f *fakeStore) GetAgentCredentialByHash(_ context.Context, tokenHash string
 
 func (f *fakeStore) TouchAgentCredentialLastUsed(_ context.Context, _ string) error {
 	return nil
+}
+
+func (f *fakeStore) TouchAgentLastSeen(_ context.Context, _ string) error {
+	return nil
+}
+
+func (f *fakeStore) GetOrganization(_ context.Context, id string) (domain.Organization, error) {
+	status := f.orgStatus
+	if status == "" {
+		status = "active"
+	}
+	return domain.Organization{ID: id, Status: status}, nil
 }
 
 func TestRegisterAgentIssuesCredentialOnce(t *testing.T) {
@@ -199,5 +212,23 @@ func TestRevokeAgentRejectsNewToken(t *testing.T) {
 
 	if _, err := svc.AuthenticateAgentToken(context.Background(), token); !errors.Is(err, identity.ErrCredentialRevoked) {
 		t.Fatalf("error = %v, want ErrCredentialRevoked", err)
+	}
+}
+
+func TestAuthenticateAgentTokenOrgSuspended(t *testing.T) {
+	st := newFakeStore()
+	svc := identity.NewService(st)
+
+	_, token, _, err := svc.RegisterAgent(context.Background(), identity.RegisterAgentInput{
+		OrgID: "org-1", OwnerUserID: "user-1", Name: "agent-a",
+	}, "admin-1")
+	if err != nil {
+		t.Fatalf("RegisterAgent() error = %v", err)
+	}
+
+	st.orgStatus = "suspended"
+
+	if _, err := svc.AuthenticateAgentToken(context.Background(), token); !errors.Is(err, identity.ErrOrgSuspended) {
+		t.Fatalf("error = %v, want ErrOrgSuspended", err)
 	}
 }

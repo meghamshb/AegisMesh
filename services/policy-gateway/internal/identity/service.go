@@ -16,6 +16,9 @@ var (
 	ErrCredentialRevoked = errors.New("agent credential revoked")
 	// ErrAgentRevoked means the credential is active but its agent is not.
 	ErrAgentRevoked = errors.New("agent revoked")
+	// ErrOrgSuspended means the agent and credential are active but the
+	// owning organization is not.
+	ErrOrgSuspended = errors.New("organization suspended")
 )
 
 // Store is the subset of store.Store the identity package depends on.
@@ -28,6 +31,8 @@ type Store interface {
 	RotateAgentCredential(ctx context.Context, agentID string, in store.CreateAgentCredentialInput, audit store.AuditInput) (domain.AgentCredential, error)
 	GetAgentCredentialByHash(ctx context.Context, tokenHash string) (domain.AgentCredential, error)
 	TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error
+	TouchAgentLastSeen(ctx context.Context, agentID string) error
+	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
 }
 
 // Service owns agent registration and the agent credential lifecycle:
@@ -145,9 +150,10 @@ type AuthenticatedAgent struct {
 	CredentialID string
 }
 
-// AuthenticateAgentToken resolves a plaintext token to the agent it belongs
-// to. It is not yet wired into the proxy (that is Phase 5.4) but is exercised
-// directly by tests here so the lifecycle is provably correct in isolation.
+// AuthenticateAgentToken resolves a plaintext token to the trusted identity
+// (org, user, agent) it belongs to. This is what the proxy calls, per
+// request, to derive identity from Proxy-Authorization instead of trusting
+// client-supplied headers.
 func (s *Service) AuthenticateAgentToken(ctx context.Context, token string) (AuthenticatedAgent, error) {
 	cred, err := s.store.GetAgentCredentialByHash(ctx, HashAgentToken(token))
 	if err != nil {
@@ -169,8 +175,19 @@ func (s *Service) AuthenticateAgentToken(ctx context.Context, token string) (Aut
 		return AuthenticatedAgent{}, ErrAgentRevoked
 	}
 
+	org, err := s.store.GetOrganization(ctx, agent.OrgID)
+	if err != nil {
+		return AuthenticatedAgent{}, fmt.Errorf("look up organization: %w", err)
+	}
+	if org.Status != "active" {
+		return AuthenticatedAgent{}, ErrOrgSuspended
+	}
+
 	if err := s.store.TouchAgentCredentialLastUsed(ctx, cred.ID); err != nil {
 		return AuthenticatedAgent{}, fmt.Errorf("touch agent credential: %w", err)
+	}
+	if err := s.store.TouchAgentLastSeen(ctx, agent.ID); err != nil {
+		return AuthenticatedAgent{}, fmt.Errorf("touch agent last_seen_at: %w", err)
 	}
 
 	return AuthenticatedAgent{

@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -10,17 +12,20 @@ import (
 	"time"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
 )
 
 type Handler struct {
 	enabled               bool
+	authMode              string
 	identity              config.AgentIdentity
 	allowIdentityOverride bool
 	agentIDHeader         string
 	userIDHeader          string
 	egress                *service.EgressService
+	identitySvc           *identity.Service
 	logger                *slog.Logger
 	transport             *http.Transport
 }
@@ -29,15 +34,18 @@ func NewHandler(
 	enabled bool,
 	cfg config.Config,
 	egress *service.EgressService,
+	identitySvc *identity.Service,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
 		enabled:               enabled,
+		authMode:              cfg.AgentAuthMode,
 		identity:              cfg.Identity,
 		allowIdentityOverride: cfg.AllowIdentityOverride,
 		agentIDHeader:         cfg.AgentIDHeader,
 		userIDHeader:          cfg.UserIDHeader,
 		egress:                egress,
+		identitySvc:           identitySvc,
 		logger:                logger,
 		transport: &http.Transport{
 			Proxy: nil,
@@ -81,7 +89,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decision, recorded, err := h.egress.RecordOutbound(r.Context(), h.resolveIdentity(r), policy.Request{
+	reqIdentity, err := h.resolveIdentity(r)
+	if err != nil {
+		h.writeAuthError(w, err)
+		return
+	}
+
+	decision, recorded, err := h.egress.RecordOutbound(r.Context(), reqIdentity, policy.Request{
 		Method: parsed.Method,
 		Host:   parsed.Host,
 		Port:   parsed.Port,
@@ -116,18 +130,102 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) resolveIdentity(r *http.Request) config.AgentIdentity {
-	identity := h.identity
+// resolveIdentity derives the trusted org/user/agent identity for a proxied
+// request. In "static" mode it reproduces the pre-5.4 behavior exactly
+// (including the identity-override headers, if enabled). In "token" mode,
+// identity comes only from a valid Proxy-Authorization agent credential;
+// identity-override headers are never honored, so a valid Agent A token can
+// never be used to claim Agent B's identity.
+func (h *Handler) resolveIdentity(r *http.Request) (config.AgentIdentity, error) {
+	if h.authMode == config.AgentAuthModeToken {
+		return h.resolveTokenIdentity(r)
+	}
+	return h.resolveStaticIdentity(r), nil
+}
+
+func (h *Handler) resolveStaticIdentity(r *http.Request) config.AgentIdentity {
+	result := h.identity
 	if !h.allowIdentityOverride {
-		return identity
+		return result
 	}
 	if agentID := strings.TrimSpace(r.Header.Get(h.agentIDHeader)); agentID != "" {
-		identity.AgentID = agentID
+		result.AgentID = agentID
 	}
 	if userID := strings.TrimSpace(r.Header.Get(h.userIDHeader)); userID != "" {
-		identity.UserID = userID
+		result.UserID = userID
 	}
-	return identity
+	return result
+}
+
+func (h *Handler) resolveTokenIdentity(r *http.Request) (config.AgentIdentity, error) {
+	token, ok := extractProxyToken(r)
+	if !ok {
+		return config.AgentIdentity{}, identity.ErrInvalidToken
+	}
+
+	authed, err := h.identitySvc.AuthenticateAgentToken(r.Context(), token)
+	if err != nil {
+		return config.AgentIdentity{}, err
+	}
+
+	return config.AgentIdentity{
+		OrgID:   authed.OrgID,
+		UserID:  authed.OwnerUserID,
+		AgentID: authed.AgentID,
+	}, nil
+}
+
+// extractProxyToken reads the agent credential from Proxy-Authorization,
+// supporting both "Bearer <token>" and "Basic <base64(agent:<token>)>".
+func extractProxyToken(r *http.Request) (string, bool) {
+	header := strings.TrimSpace(r.Header.Get("Proxy-Authorization"))
+	if header == "" {
+		return "", false
+	}
+
+	scheme, value, found := strings.Cut(header, " ")
+	if !found {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+
+	switch strings.ToLower(scheme) {
+	case "bearer":
+		if value == "" {
+			return "", false
+		}
+		return value, true
+	case "basic":
+		decoded, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			return "", false
+		}
+		_, password, found := strings.Cut(string(decoded), ":")
+		if !found || password == "" {
+			return "", false
+		}
+		return password, true
+	default:
+		return "", false
+	}
+}
+
+// writeAuthError maps a proxy identity error to the correct HTTP status.
+// A missing/invalid/revoked credential is a 407 (the client must supply a
+// valid proxy credential); a revoked agent or suspended org is a 403
+// (the credential is well-formed but no longer authorized). Neither case
+// creates a pending egress_requests row.
+func (h *Handler) writeAuthError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, identity.ErrInvalidToken), errors.Is(err, identity.ErrCredentialRevoked):
+		w.Header().Set("Proxy-Authenticate", `Bearer realm="clearance-gateway"`)
+		writeJSON(w, http.StatusProxyAuthRequired, map[string]string{"error": "valid agent credential required"})
+	case errors.Is(err, identity.ErrAgentRevoked), errors.Is(err, identity.ErrOrgSuspended):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+	default:
+		h.logger.Error("resolve proxy identity", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve agent identity"})
+	}
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, parsed ParsedRequest) {
@@ -140,6 +238,10 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, parsed ParsedR
 
 func (h *Handler) forwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq := r.Clone(r.Context())
+	// The Clearance credential authenticates the caller to this gateway; it
+	// must never reach the destination.
+	outReq.Header.Del("Proxy-Authorization")
+	outReq.Header.Del("Proxy-Connection")
 	resp, err := h.transport.RoundTrip(outReq)
 	if err != nil {
 		h.logger.Error("forward http request", "error", err)

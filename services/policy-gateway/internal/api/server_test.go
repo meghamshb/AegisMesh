@@ -167,6 +167,8 @@ func (s stubStore) GetAgentCredentialByHash(_ context.Context, _ string) (domain
 
 func (s stubStore) TouchAgentCredentialLastUsed(_ context.Context, _ string) error { return nil }
 
+func (s stubStore) TouchAgentLastSeen(_ context.Context, _ string) error { return nil }
+
 func TestHealthOK(t *testing.T) {
 	cfg := config.Config{
 		ServiceName:    "policy-gateway",

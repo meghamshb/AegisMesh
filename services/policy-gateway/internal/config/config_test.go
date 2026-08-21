@@ -30,6 +30,31 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ReadTimeout != 15*time.Second {
 		t.Fatalf("ReadTimeout = %v", cfg.ReadTimeout)
 	}
+	if cfg.AgentAuthMode != config.AgentAuthModeStatic {
+		t.Fatalf("AgentAuthMode = %q, want %q (static by default preserves pre-5.4 behavior)", cfg.AgentAuthMode, config.AgentAuthModeStatic)
+	}
+}
+
+func TestLoadAgentAuthModeToken(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://example")
+	t.Setenv("GATEWAY_AGENT_AUTH_MODE", "token")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentAuthMode != config.AgentAuthModeToken {
+		t.Fatalf("AgentAuthMode = %q, want %q", cfg.AgentAuthMode, config.AgentAuthModeToken)
+	}
+}
+
+func TestLoadRejectsInvalidAgentAuthMode(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://example")
+	t.Setenv("GATEWAY_AGENT_AUTH_MODE", "bogus")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("expected invalid agent auth mode error")
+	}
 }
 
 func TestLoadCustomProxyFlag(t *testing.T) {

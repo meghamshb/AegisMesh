@@ -981,6 +981,16 @@ func (p *Postgres) TouchAgentCredentialLastUsed(ctx context.Context, credentialI
 	return nil
 }
 
+func (p *Postgres) TouchAgentLastSeen(ctx context.Context, agentID string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE agents SET last_seen_at = NOW() WHERE id = $1
+	`, agentID)
+	if err != nil {
+		return fmt.Errorf("touch agent last_seen_at: %w", err)
+	}
+	return nil
+}
+
 func nullIfEmpty(value string) any {
 	if value == "" {
 		return nil

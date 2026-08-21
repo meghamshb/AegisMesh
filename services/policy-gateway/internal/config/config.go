@@ -31,23 +31,29 @@ type AgentIdentity struct {
 }
 
 type Config struct {
-	ListenAddr     string
-	ServiceName    string
-	ServiceVersion string
-	PostgresDSN    string
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	IdleTimeout    time.Duration
-	ShutdownGrace  time.Duration
-	ProxyEnabled   bool
-	Identity       AgentIdentity
-	AdminID                string
-	AdminToken             string
-	ApproverHeader         string
-	AllowIdentityOverride  bool
-	AgentIDHeader          string
-	UserIDHeader           string
+	ListenAddr            string
+	ServiceName           string
+	ServiceVersion        string
+	PostgresDSN           string
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	IdleTimeout           time.Duration
+	ShutdownGrace         time.Duration
+	ProxyEnabled          bool
+	Identity              AgentIdentity
+	AdminID               string
+	AdminToken            string
+	ApproverHeader        string
+	AllowIdentityOverride bool
+	AgentIDHeader         string
+	UserIDHeader          string
+	AgentAuthMode         string
 }
+
+const (
+	AgentAuthModeStatic = "static"
+	AgentAuthModeToken  = "token"
+)
 
 func Load() (Config, error) {
 	readTimeout, err := durationEnv("GATEWAY_READ_TIMEOUT", defaultReadTimeout)
@@ -92,6 +98,7 @@ func Load() (Config, error) {
 		AllowIdentityOverride: boolEnvDefault("GATEWAY_ALLOW_IDENTITY_OVERRIDE", false),
 		AgentIDHeader:         envOrDefault("GATEWAY_AGENT_ID_HEADER", "X-Gateway-Agent-Id"),
 		UserIDHeader:          envOrDefault("GATEWAY_USER_ID_HEADER", "X-Gateway-User-Id"),
+		AgentAuthMode:         envOrDefault("GATEWAY_AGENT_AUTH_MODE", AgentAuthModeStatic),
 	}
 
 	if cfg.PostgresDSN == "" {
@@ -99,6 +106,9 @@ func Load() (Config, error) {
 	}
 	if cfg.Identity.OrgID == "" || cfg.Identity.UserID == "" || cfg.Identity.AgentID == "" {
 		return Config{}, fmt.Errorf("GATEWAY_ORG_ID, GATEWAY_USER_ID, and GATEWAY_AGENT_ID must not be empty")
+	}
+	if cfg.AgentAuthMode != AgentAuthModeStatic && cfg.AgentAuthMode != AgentAuthModeToken {
+		return Config{}, fmt.Errorf("GATEWAY_AGENT_AUTH_MODE must be %q or %q", AgentAuthModeStatic, AgentAuthModeToken)
 	}
 
 	return cfg, nil

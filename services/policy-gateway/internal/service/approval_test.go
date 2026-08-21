@@ -92,6 +92,7 @@ func (s *approvalStore) GetAgentCredentialByHash(context.Context, string) (domai
 	return domain.AgentCredential{}, nil
 }
 func (s *approvalStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
+func (s *approvalStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
 
 func TestApproveOnceUsesOnceAuditEvent(t *testing.T) {
 	st := &approvalStore{
@@ -216,6 +217,7 @@ func (rememberStore) GetAgentCredentialByHash(context.Context, string) (domain.A
 	return domain.AgentCredential{}, nil
 }
 func (rememberStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
+func (rememberStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
 
 func TestApproveRememberRejectsCONNECT(t *testing.T) {
 	svc := service.NewEgress(rememberStore{

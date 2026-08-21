@@ -32,7 +32,7 @@ func New(cfg config.Config, logger *slog.Logger, st store.Store) *App {
 	return &App{
 		cfg:    cfg,
 		logger: logger,
-		proxy:  proxy.NewHandler(cfg.ProxyEnabled, cfg, egress, logger),
+		proxy:  proxy.NewHandler(cfg.ProxyEnabled, cfg, egress, identitySvc, logger),
 		api:    api.New(cfg, logger, st, egress, identitySvc),
 	}
 }

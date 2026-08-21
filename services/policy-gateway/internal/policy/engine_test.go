@@ -83,6 +83,7 @@ func (s stubStore) GetAgentCredentialByHash(context.Context, string) (domain.Age
 	return domain.AgentCredential{}, nil
 }
 func (s stubStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
+func (s stubStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
 
 func TestEvaluatePendingWhenNoRules(t *testing.T) {
 	engine := policy.NewRuleEngine(stubStore{})

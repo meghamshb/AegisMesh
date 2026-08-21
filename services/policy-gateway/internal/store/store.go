@@ -122,4 +122,5 @@ type Store interface {
 	RotateAgentCredential(ctx context.Context, agentID string, in CreateAgentCredentialInput, audit AuditInput) (domain.AgentCredential, error)
 	GetAgentCredentialByHash(ctx context.Context, tokenHash string) (domain.AgentCredential, error)
 	TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error
+	TouchAgentLastSeen(ctx context.Context, agentID string) error
 }
