@@ -61,6 +61,21 @@ func (s *approvalStore) HasDeniedPattern(context.Context, store.ApprovalMatchInp
 	return false, nil
 }
 func (s *approvalStore) MarkApprovalConsumed(context.Context, string) error { return nil }
+func (s *approvalStore) GetOrganization(context.Context, string) (domain.Organization, error) {
+	return domain.Organization{}, nil
+}
+func (s *approvalStore) ListUsers(context.Context, store.ListUsersInput) ([]domain.User, error) {
+	return nil, nil
+}
+func (s *approvalStore) GetUser(context.Context, string) (domain.User, error) {
+	return domain.User{}, nil
+}
+func (s *approvalStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
+	return nil, nil
+}
+func (s *approvalStore) GetAgent(context.Context, string) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
 
 func TestApproveOnceUsesOnceAuditEvent(t *testing.T) {
 	st := &approvalStore{
@@ -156,6 +171,17 @@ func (rememberStore) HasDeniedPattern(context.Context, store.ApprovalMatchInput)
 	return false, nil
 }
 func (rememberStore) MarkApprovalConsumed(context.Context, string) error { return nil }
+func (rememberStore) GetOrganization(context.Context, string) (domain.Organization, error) {
+	return domain.Organization{}, nil
+}
+func (rememberStore) ListUsers(context.Context, store.ListUsersInput) ([]domain.User, error) {
+	return nil, nil
+}
+func (rememberStore) GetUser(context.Context, string) (domain.User, error) { return domain.User{}, nil }
+func (rememberStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
+	return nil, nil
+}
+func (rememberStore) GetAgent(context.Context, string) (domain.Agent, error) { return domain.Agent{}, nil }
 
 func TestApproveRememberRejectsCONNECT(t *testing.T) {
 	svc := service.NewEgress(rememberStore{

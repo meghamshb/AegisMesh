@@ -70,6 +70,15 @@ type OrgRuleOptions struct {
 	ExpiresAt *time.Time
 }
 
+type ListUsersInput struct {
+	Status string
+}
+
+type ListAgentsInput struct {
+	UserID string
+	Status string
+}
+
 type Store interface {
 	Ping(ctx context.Context) error
 	ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error)
@@ -87,4 +96,9 @@ type Store interface {
 	FindConsumableApproval(ctx context.Context, in ApprovalMatchInput) (*domain.EgressRequest, error)
 	HasDeniedPattern(ctx context.Context, in ApprovalMatchInput) (bool, error)
 	MarkApprovalConsumed(ctx context.Context, id string) error
+	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
+	ListUsers(ctx context.Context, in ListUsersInput) ([]domain.User, error)
+	GetUser(ctx context.Context, id string) (domain.User, error)
+	ListAgents(ctx context.Context, in ListAgentsInput) ([]domain.Agent, error)
+	GetAgent(ctx context.Context, id string) (domain.Agent, error)
 }

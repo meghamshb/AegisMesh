@@ -54,6 +54,17 @@ func (s stubStore) HasDeniedPattern(context.Context, store.ApprovalMatchInput) (
 	return s.deniedPattern, nil
 }
 func (s stubStore) MarkApprovalConsumed(context.Context, string) error { return nil }
+func (s stubStore) GetOrganization(context.Context, string) (domain.Organization, error) {
+	return domain.Organization{}, nil
+}
+func (s stubStore) ListUsers(context.Context, store.ListUsersInput) ([]domain.User, error) {
+	return nil, nil
+}
+func (s stubStore) GetUser(context.Context, string) (domain.User, error) { return domain.User{}, nil }
+func (s stubStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
+	return nil, nil
+}
+func (s stubStore) GetAgent(context.Context, string) (domain.Agent, error) { return domain.Agent{}, nil }
 
 func TestEvaluatePendingWhenNoRules(t *testing.T) {
 	engine := policy.NewRuleEngine(stubStore{})

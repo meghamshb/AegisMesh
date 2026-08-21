@@ -53,6 +53,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/v1/requests/{id}/deny", s.handleDenyRequest)
 	s.mux.HandleFunc("POST /api/v1/rules", s.handleCreateRule)
 	s.mux.HandleFunc("DELETE /api/v1/rules/{id}", s.handleDeleteRule)
+	s.mux.HandleFunc("GET /api/v1/organizations/current", s.handleGetCurrentOrganization)
+	s.mux.HandleFunc("GET /api/v1/users", s.handleListUsers)
+	s.mux.HandleFunc("GET /api/v1/users/{id}", s.handleGetUser)
+	s.mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
+	s.mux.HandleFunc("GET /api/v1/agents/{id}", s.handleGetAgent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +365,128 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusCreated, rule)
+}
+
+func (s *Server) handleGetCurrentOrganization(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	org, err := s.egress.GetOrganization(ctx, s.cfg.Identity.OrgID)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, org)
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	users, err := s.egress.ListUsers(ctx, service.ListUsersOptions{
+		Status: r.URL.Query().Get("status"),
+	})
+	if err != nil {
+		var invalid domain.InvalidEnumError
+		if errors.As(err, &invalid) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.logger.Error("list users", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to list users")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": users})
+}
+
+func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "user id is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	user, err := s.egress.GetUser(ctx, id)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	agents, err := s.egress.ListAgents(ctx, service.ListAgentsOptions{
+		UserID: r.URL.Query().Get("user_id"),
+		Status: r.URL.Query().Get("status"),
+	})
+	if err != nil {
+		var invalid domain.InvalidEnumError
+		if errors.As(err, &invalid) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.logger.Error("list agents", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to list agents")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": agents})
+}
+
+func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	agent, err := s.egress.GetAgent(ctx, id)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, agent)
+}
+
+func (s *Server) handleDirectoryError(w http.ResponseWriter, err error) {
+	var notFound domain.ErrNotFound
+	if errors.As(err, &notFound) {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.logger.Error("directory handler", "error", err)
+	s.writeError(w, http.StatusInternalServerError, "directory operation failed")
 }
 
 func (s *Server) notImplemented(w http.ResponseWriter, _ *http.Request) {
