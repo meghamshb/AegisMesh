@@ -69,6 +69,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 	if !principal.CanManageUsers() {
 		s.writeError(w, http.StatusForbidden, "not authorized to create users")
 		return
@@ -265,6 +268,9 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 
 	var body domain.RegisterAgentBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -329,6 +335,9 @@ func (s *Server) handleRotateAgentCredential(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		s.writeError(w, http.StatusBadRequest, "agent id is required")
@@ -371,6 +380,9 @@ func (s *Server) handleRotateAgentCredential(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {
+		return
+	}
+	if !s.allowMutation(w, r) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))

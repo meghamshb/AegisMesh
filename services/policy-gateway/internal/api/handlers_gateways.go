@@ -16,6 +16,9 @@ func (s *Server) handleRegisterGateway(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 
 	var body domain.RegisterGatewayBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

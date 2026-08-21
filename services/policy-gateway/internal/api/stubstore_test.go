@@ -22,6 +22,7 @@ type stubStore struct {
 	rules        []domain.PolicyRule
 	requests     []domain.EgressRequest
 	auditEvents  []domain.AuditEvent
+	credentials  []domain.AgentCredential
 }
 
 func (stubStore) Ping(_ context.Context) error { return nil }
@@ -265,7 +266,12 @@ func (s stubStore) RotateAgentCredential(_ context.Context, orgID, agentID strin
 	return domain.AgentCredential{}, domain.ErrNotFound{Resource: "agent", ID: agentID}
 }
 
-func (s stubStore) GetAgentCredentialByHash(_ context.Context, _ string) (domain.AgentCredential, error) {
+func (s stubStore) GetAgentCredentialByHash(_ context.Context, hash string) (domain.AgentCredential, error) {
+	for _, c := range s.credentials {
+		if c.TokenHash == hash {
+			return c, nil
+		}
+	}
 	return domain.AgentCredential{}, domain.ErrNotFound{Resource: "agent_credential", ID: "token"}
 }
 

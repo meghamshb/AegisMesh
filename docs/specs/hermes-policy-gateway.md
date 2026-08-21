@@ -679,7 +679,8 @@ Hermes needs LLM access. Options:
 | 5.9 Gateway registration + policy sync | **Done** | `clr_gateway_...`, versioned snapshots, fail-closed |
 | 5.9a Tenant-isolation hardening | **Done** | Every tenant-owned query org-scoped; cross-org test suites |
 | 5.10 Multi-gateway fleet | **Done** | Snapshot-backed evaluation, `docker-compose.fleet.yml`, `make smoke-fleet`, Gateways tab |
-| 5.11+ Remaining hardening | **Not started** | SSO, TLS, rate limits, CSV export |
+| 5.11 Security hardening | **Done** | SSRF-to-control-plane fix, rate limits, credential hygiene, cross-tenant tests |
+| 5.12+ Remaining | **Not started** | Security evaluation suite, SSO, CSV export |
 
 Verify: `make smoke` from repo root (requires running stack).
 
@@ -859,7 +860,11 @@ Purpose: make `/ui` credible for corp reviewers — utilitarian wireframe aesthe
 
 - [ ] SSO / proper admin auth (replace token-in-UI) — still open; see the
       tenancy note below for what this unblocks
-- [ ] TLS, timeouts, rate limits
+- [x] Rate limits (Phase 5.11) — auth failures and privileged mutations; reads
+      and proxied traffic deliberately unlimited
+- [x] TLS verified by default on every outbound client (Phase 5.11); no
+      `InsecureSkipVerify` anywhere
+- [ ] TLS *termination* for the control plane's own listener, and timeouts
 - [ ] Audit export CSV
 - [x] Pagination on every list endpoint (Phase 5.6) — default 50, max 200
 - [x] Multi-tenant orgs (Phases 5.2–5.9 + tenant-isolation hardening) — real
@@ -1194,6 +1199,129 @@ introducing real per-caller authentication (Phase 5.13) is a change to how
 - `internal/store/crossorg_integration_test.go` (`-tags=integration`) — the same
   properties asserted against real Postgres, so the SQL itself is proven to
   carry the predicate rather than relying on handlers passing the right value.
+
+---
+
+## Phase 5.11 — Security hardening (implemented)
+
+### The bug this phase found: SSRF to the control plane
+
+§5.11.7 asks for one distinction to be made *explicit*: a gateway legitimately
+talks to the control plane for policy sync, identity resolution, and
+heartbeats — but **proxied agent traffic must never reach it**. Both leave the
+same process.
+
+That distinction was not being enforced. The SSRF blocklist was a hardcoded set
+(`localhost`, `postgres`, `policy-gateway`, `host.docker.internal`), and
+`control-plane`, `gateway-a`, and `gateway-b` were not in it. Inside Docker
+they happened to be blocked because they resolve to private IPs — incidental,
+not intentional, and it breaks in exactly the deployment the fleet is built
+for: a control plane on a **public** address
+(`CLEARANCE_CONTROL_URL=https://control.example.com`), where the private-range
+check does nothing and an agent can proxy straight to it.
+
+Two fixes, both in `internal/proxy/blocked_upstream.go`:
+
+- The configured control-plane host is now blocked **by name**, via
+  `NewUpstreamGuard(HostFromURL(cfg.ControlPlaneURL))`. Reachability is no
+  longer a function of what the name happens to resolve to.
+- DNS resolution failure now **fails closed**. It previously returned "not
+  blocked", so an attacker who could disrupt resolution got an unchecked
+  forward. An unresolvable host would fail to connect anyway, so refusing costs
+  nothing.
+
+`make smoke-fleet` proves the distinction live: proxied agent traffic to
+`control-plane` and `postgres` returns 403 and never enters the approval queue,
+while both gateways keep heartbeating — i.e. their own channel is untouched.
+
+### Rate limiting (§5.11.2)
+
+`internal/ratelimit` is a small token bucket keyed by transport peer address.
+Scope is deliberate — Clearance limits **credential guessing and privileged
+mutations**, never ordinary proxied traffic:
+
+| Limited | Not limited |
+|---|---|
+| Admin auth failures | Successful auth |
+| Gateway auth failures | Any read endpoint |
+| Agent registration, credential rotation, agent revocation | Proxy hot path |
+| User creation, approve/deny decisions | Snapshot fetch, heartbeat |
+
+Two properties worth stating because they are easy to get wrong, and both have
+tests:
+
+- `X-Forwarded-For` is **ignored**. It is client-controlled, so honouring it
+  would let an attacker mint a fresh bucket per request and bypass the limit
+  entirely. A deployment behind a trusted L7 proxy must re-attach identity there.
+- Successful authentication does **not** consume failure budget, or a busy
+  operator would lock themselves out.
+
+Idle buckets are evicted on growth, so cycling keys cannot exhaust memory.
+
+Tuning: `CLEARANCE_AUTH_FAILURE_LIMIT` (default 10), `CLEARANCE_MUTATION_LIMIT`
+(default 60), `CLEARANCE_RATE_LIMIT_WINDOW` (default 1m). Zero disables.
+
+### TLS (§5.11.1)
+
+Every outbound client (`policycache`, `remoteidentity`, `fleet`) uses Go's
+default transport, which verifies certificates. **There is no
+`InsecureSkipVerify` anywhere in this codebase and none should be added.** A
+gateway started against a non-HTTPS control-plane URL logs a warning at boot:
+plaintext is a local-Compose convenience only, since over a real network it
+exposes the gateway credential and every policy snapshot in transit.
+
+### Secrets (§5.11.3, §5.11.4, §5.11.10)
+
+- No log statement takes a token, credential, or authorization header. Only
+  `token_prefix` — a truncation, never enough to reconstruct a credential — is
+  ever surfaced.
+- No proxy URL embeds credentials; the agent credential travels in
+  `Proxy-Authorization`, which is stripped before forwarding upstream.
+- Recorded paths exclude the query string, so `?access_token=…` and signed-URL
+  signatures never reach `egress_requests` or `audit_events`. CONNECT records
+  only `/`, since a tunnel gives no path visibility.
+- Audit metadata stays limited to host, port, method, path, identity, decision,
+  rule, and timing. Request bodies and headers are never stored.
+
+### Constant-time comparison (§5.11.5)
+
+Deliberately **not** implemented, per the spec. Credential lookup is an indexed
+SHA-256 equality match in Postgres; there is no application-level secret
+comparison to time, and hand-rolled byte comparison around a database lookup
+would add risk without removing any.
+
+### Audit immutability (§5.11.9)
+
+There is no delete endpoint for audit events, and none should be added. The
+only `DELETE` route in the API is rule revocation. Retention, if needed, should
+be an explicit archival policy.
+
+### Cross-tenant isolation (§5.11.6)
+
+The five cases the spec names are covered. Four were already enforced by the
+tenant-isolation pass; the fifth is the one §5.11.6 flags as important:
+
+> Org A agent token cannot be accepted by gateway registered to Org B.
+> Even if token resolves globally, gateway org must equal agent org.
+
+`handleInternalAuthenticateAgent` compares the resolved agent's org against the
+authenticating gateway's org and rejects a mismatch as an unknown token — never
+a distinct error, which would make a gateway credential a cross-org identity
+oracle. Verified non-vacuous by disabling the check and observing a 200 that
+returned the other tenant's agent identity.
+
+### Acceptance criteria
+
+| Criterion | Evidence |
+|---|---|
+| No plaintext credentials in DB | `credential_hygiene_integration_test.go`, against real Postgres |
+| No plaintext credential in logs | No log call takes a token; only `token_prefix` is surfaced |
+| Proxy auth never reaches upstream | `TestForwardHTTPStripsProxyAuthorization` |
+| Cross-org tests pass | `crossorg_test.go`, `crossorg_integration_test.go`, `security_test.go` |
+| Internal endpoints authenticated | `TestInternalEndpointsRequireGatewayCredential` — private network is not authentication, and the admin token is not a gateway credential |
+| SSRF tests still pass | `ssrf_test.go` plus the live fleet check |
+| Stale policy fails closed | `TestDistributedGatewayFailsClosedWhenSnapshotUnavailable` |
+| Disabled/revoked identities fail predictably | `TestRevokeAgentRejectsNewToken`, `…OrgSuspended`, `…OwnerDisabled` |
 
 ---
 

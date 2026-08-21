@@ -242,5 +242,40 @@ if docker run --rm --network "${PROJECT}_gateway-a-net" "$CURL_IMAGE" \
 fi
 echo "PASS: agent networks cannot reach postgres"
 
+# ---------------------------------------------------------------------------
+step "Phase 5.11.7: an agent must not reach the control plane THROUGH its gateway"
+# ---------------------------------------------------------------------------
+# The gateway itself talks to the control plane constantly (policy sync,
+# identity, heartbeats). The distinction being proven here is that proxied
+# agent traffic must not, even though it exits the same process.
+for target in "http://control-plane:8080/api/v1/users" "http://postgres:5432/"; do
+  code="$(docker run --rm --network "${PROJECT}_gateway-a-net" "$CURL_IMAGE" \
+    -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -x "http://gateway-a:8081" -H "Proxy-Authorization: Bearer ${agent_a_token}" \
+    "$target" 2>/dev/null || echo "000")"
+  if [ "$code" != "403" ]; then
+    fail "proxied agent traffic to ${target} returned ${code}, expected 403 (SSRF guard)"
+  fi
+done
+echo "PASS: SSRF guard blocks proxied agent access to the control plane and database"
+
+# It must be hard-denied, not queued for approval - nobody should be able to
+# click "approve" and grant an agent access to the control plane.
+if api "${CONTROL}/api/v1/requests?limit=200" | grep -q "control-plane"; then
+  fail "proxied control-plane access entered the approval queue instead of being hard-denied"
+fi
+echo "PASS: blocked internal destinations never enter the approval queue"
+
+# Meanwhile the gateway's own control-plane channel is unaffected - it is still
+# heartbeating, which is only possible by reaching the control plane.
+fresh_beats="$(api "${CONTROL}/api/v1/gateways" |
+  python3 -c '
+import json, sys
+print(sum(1 for g in json.load(sys.stdin)["items"] if g["last_seen_at"]))')"
+if [ "$fresh_beats" -lt 2 ]; then
+  fail "expected both gateways to still be heartbeating; only ${fresh_beats} have"
+fi
+echo "PASS: gateways still reach the control plane themselves (${fresh_beats} heartbeating)"
+
 echo
 echo "Phase 5.10 fleet smoke passed: one policy change, two independent gateways, no restarts."

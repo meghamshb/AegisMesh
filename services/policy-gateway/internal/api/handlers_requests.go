@@ -91,6 +91,9 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		s.writeError(w, http.StatusBadRequest, "request id is required")
@@ -140,6 +143,9 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDenyRequest(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {
+		return
+	}
+	if !s.allowMutation(w, r) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))

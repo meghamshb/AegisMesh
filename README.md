@@ -30,7 +30,8 @@ Clearance is the missing layer: **default deny**, **human-in-the-loop approval**
 | **Approve once** | One-time grant; agent retries and succeeds |
 | **Remember for org** | Teammates auto-approve matching patterns |
 | **Network lockdown** | Hermes cannot bypass the proxy (Docker + iptables) |
-| **SSRF guard** | Internal upstreams hard-denied (no approval queue) |
+| **SSRF guard** | Internal upstreams and the control plane hard-denied (no approval queue) |
+| **Rate limiting** | Auth failures and privileged mutations throttled; reads and agent traffic are not |
 | **Real Hermes runtime** | Terminal + web toolsets; Codex OAuth in pilot profile |
 
 ---
@@ -174,7 +175,12 @@ suites — see "Tenant isolation (locked contract)" and "Phase 5.10" in
 Run `make smoke` for the single-node path and `make smoke-fleet` for the
 multi-gateway demo.
 
-Still open: SSO / per-caller admin auth, TLS, rate limits, CSV audit export.
+Phase 5.11 (security hardening) closed an SSRF gap where proxied agent traffic
+could reach the control plane, and added rate limiting on authentication
+failures and privileged mutations, credential-hygiene tests against real
+Postgres, and the cross-tenant test matrix.
+
+Still open: SSO / per-caller admin auth, TLS termination, CSV audit export.
 
 ---
 

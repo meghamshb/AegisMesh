@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +54,18 @@ func main() {
 	distributed := cfg.Mode == config.ModeGateway && cfg.ControlPlaneURL != ""
 
 	if distributed {
+		// TLS seam (Phase 5.11.1). The HTTP clients in policycache,
+		// remoteidentity, and fleet all use Go's default transport, which
+		// verifies certificates - there is no InsecureSkipVerify anywhere in
+		// this codebase, and none should be added. A plaintext control-plane
+		// URL is a local-Compose convenience only: over a real network it
+		// exposes the gateway credential and every policy snapshot in transit.
+		if !strings.HasPrefix(strings.ToLower(cfg.ControlPlaneURL), "https://") {
+			logger.Warn("control plane URL is not HTTPS; acceptable only on a private development network",
+				"control_url_scheme", schemeOf(cfg.ControlPlaneURL),
+			)
+		}
+
 		cache := policycache.New(
 			policycache.NewHTTPFetcher(cfg.ControlPlaneURL, cfg.GatewayToken),
 			cfg.PolicyMaxStale,
@@ -133,4 +146,13 @@ func selectListener(cfg config.Config, application *app.App) (addr string, handl
 	default:
 		return cfg.ListenAddr, application.Handler()
 	}
+}
+
+// schemeOf reports a URL's scheme for logging, without echoing the URL itself
+// (which may carry host detail an operator would rather not have in logs).
+func schemeOf(raw string) string {
+	if i := strings.Index(raw, "://"); i > 0 {
+		return strings.ToLower(raw[:i])
+	}
+	return "none"
 }

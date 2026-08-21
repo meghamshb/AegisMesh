@@ -28,6 +28,13 @@ const (
 	defaultPolicyMaxStale        = 15 * time.Minute
 	defaultAgentIdentityCacheTTL = 10 * time.Second
 	defaultHeartbeatInterval     = 10 * time.Second
+
+	// Rate limits (Phase 5.11.2). Generous enough that an operator clicking
+	// through the console never notices, tight enough that credential
+	// guessing and bulk credential minting are not free.
+	defaultAuthFailureLimit = 10
+	defaultMutationLimit    = 60
+	defaultRateLimitWindow  = time.Minute
 )
 
 type AgentIdentity struct {
@@ -69,6 +76,9 @@ type Config struct {
 	PolicyMaxStale        time.Duration
 	AgentIdentityCacheTTL time.Duration
 	HeartbeatInterval     time.Duration
+	AuthFailureLimit      int
+	MutationLimit         int
+	RateLimitWindow       time.Duration
 }
 
 const (
@@ -126,6 +136,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rateLimitWindow, err := durationEnv("CLEARANCE_RATE_LIMIT_WINDOW", defaultRateLimitWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	authFailureLimit, err := intEnv("CLEARANCE_AUTH_FAILURE_LIMIT", defaultAuthFailureLimit)
+	if err != nil {
+		return Config{}, err
+	}
+	mutationLimit, err := intEnv("CLEARANCE_MUTATION_LIMIT", defaultMutationLimit)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Mode:              envOrDefault("CLEARANCE_MODE", ModeAll),
@@ -157,6 +179,9 @@ func Load() (Config, error) {
 		PolicyMaxStale:        policyMaxStale,
 		AgentIdentityCacheTTL: agentIdentityCacheTTL,
 		HeartbeatInterval:     heartbeatInterval,
+		AuthFailureLimit:      authFailureLimit,
+		MutationLimit:         mutationLimit,
+		RateLimitWindow:       rateLimitWindow,
 	}
 
 	if cfg.PostgresDSN == "" {
@@ -212,4 +237,18 @@ func boolEnvDefault(key string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+// intEnv reads a non-negative integer environment variable. Zero disables the
+// feature it governs (see ratelimit.New), so it is a valid value.
+func intEnv(name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer, got %q", name, raw)
+	}
+	return parsed, nil
 }

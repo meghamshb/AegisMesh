@@ -18,6 +18,7 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/ratelimit"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/ui"
@@ -30,6 +31,12 @@ type Server struct {
 	egress   *service.EgressService
 	identity *identity.Service
 	mux      *http.ServeMux
+
+	// Rate limiters (Phase 5.11.2). authFailures throttles credential
+	// guessing; mutations throttles the privileged operations that mint or
+	// revoke access. Ordinary reads are not limited.
+	authFailures *ratelimit.Limiter
+	mutations    *ratelimit.Limiter
 }
 
 func New(cfg config.Config, logger *slog.Logger, st store.Store, egress *service.EgressService, identitySvc *identity.Service) *Server {
@@ -40,6 +47,9 @@ func New(cfg config.Config, logger *slog.Logger, st store.Store, egress *service
 		egress:   egress,
 		identity: identitySvc,
 		mux:      http.NewServeMux(),
+
+		authFailures: ratelimit.New(cfg.AuthFailureLimit, cfg.RateLimitWindow),
+		mutations:    ratelimit.New(cfg.MutationLimit, cfg.RateLimitWindow),
 	}
 	s.registerRoutes()
 	ui.NewHandler().Register(s.mux)
@@ -157,11 +167,29 @@ func (s *Server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	if token != s.cfg.AdminToken {
+		// Count the failure before reporting it, so repeated guessing from one
+		// source runs out of budget rather than being free.
+		if !s.authFailures.Allow(ratelimit.ClientKey(r)) {
+			s.writeError(w, http.StatusTooManyRequests, "too many authentication failures; retry later")
+			return false
+		}
 		w.Header().Set("WWW-Authenticate", `Bearer realm="policy-gateway-admin"`)
 		s.writeError(w, http.StatusUnauthorized, "admin token required")
 		return false
 	}
 	return true
+}
+
+// allowMutation gates the privileged operations that mint or revoke access -
+// agent registration, credential rotation, and approval decisions. Reads are
+// deliberately not limited: an operator refreshing the console must never be
+// throttled out of seeing pending requests.
+func (s *Server) allowMutation(w http.ResponseWriter, r *http.Request) bool {
+	if s.mutations.Allow(ratelimit.ClientKey(r)) {
+		return true
+	}
+	s.writeError(w, http.StatusTooManyRequests, "too many privileged operations; retry later")
+	return false
 }
 
 func (s *Server) approverID(r *http.Request) string {

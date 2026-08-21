@@ -11,6 +11,7 @@ import (
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/ratelimit"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
@@ -25,6 +26,10 @@ func (s *Server) authorizeGateway(w http.ResponseWriter, r *http.Request) (domai
 		token = strings.TrimSpace(authHeader[len("Bearer "):])
 	}
 	if token == "" {
+		if !s.authFailures.Allow(ratelimit.ClientKey(r)) {
+			s.writeError(w, http.StatusTooManyRequests, "too many authentication failures; retry later")
+			return domain.AuthenticatedGateway{}, false
+		}
 		s.writeError(w, http.StatusUnauthorized, "gateway credential required")
 		return domain.AuthenticatedGateway{}, false
 	}
@@ -34,6 +39,10 @@ func (s *Server) authorizeGateway(w http.ResponseWriter, r *http.Request) (domai
 
 	authed, err := s.identity.AuthenticateGatewayToken(ctx, token)
 	if err != nil {
+		if !s.authFailures.Allow(ratelimit.ClientKey(r)) {
+			s.writeError(w, http.StatusTooManyRequests, "too many authentication failures; retry later")
+			return domain.AuthenticatedGateway{}, false
+		}
 		s.writeError(w, http.StatusUnauthorized, "invalid or revoked gateway credential")
 		return domain.AuthenticatedGateway{}, false
 	}

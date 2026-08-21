@@ -39,6 +39,7 @@ type Handler struct {
 	remoteAgentAuth       remoteAgentAuthenticator
 	logger                *slog.Logger
 	transport             *http.Transport
+	guard                 *UpstreamGuard
 
 	// recentAgents tracks when each agent was last served, backing the
 	// Gateways tab's "agents recently seen" column (Phase 5.10). It is
@@ -94,7 +95,12 @@ func NewHandler(
 			cfg.AgentIdentityCacheTTL,
 		)
 	}
+	// Proxied agent traffic must never reach the control plane, even though
+	// this same process talks to it for policy sync (Phase 5.11.7).
+	guard := NewUpstreamGuard(HostFromURL(cfg.ControlPlaneURL))
+
 	return &Handler{
+		guard:                 guard,
 		enabled:               enabled,
 		authMode:              cfg.AgentAuthMode,
 		identity:              cfg.Identity,
@@ -134,7 +140,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if blocked, reason := IsBlockedUpstream(parsed.Host); blocked {
+	if blocked, reason := h.guard.IsBlocked(parsed.Host); blocked {
 		h.logger.Warn("blocked internal upstream",
 			"host", parsed.Host,
 			"port", parsed.Port,
