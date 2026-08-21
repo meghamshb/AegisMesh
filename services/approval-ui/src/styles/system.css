@@ -382,6 +382,23 @@ table.data-table tbody tr.selected {
   background: var(--status-denied-bg);
 }
 
+.status-tag.active {
+  background: var(--status-approved-bg);
+}
+
+.status-tag.disabled,
+.status-tag.revoked {
+  background: var(--status-denied-bg);
+}
+
+.credential-box {
+  padding: 0.5rem 0.65rem;
+  background: var(--status-default-bg);
+  border: 1px solid var(--border);
+  word-break: break-all;
+  user-select: all;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

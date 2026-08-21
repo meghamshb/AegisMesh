@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   ApiError,
   approveOnce,
-  approveRememberOrg,
+  approveRemember,
   denyRequest,
   getRequest,
   listRequests,
@@ -18,6 +18,16 @@ function formatTime(value) {
     return ''
   }
   return new Date(value).toLocaleString()
+}
+
+function rememberScopeDescription(scope) {
+  if (scope === 'agent') {
+    return 'Future matching requests from this exact agent will auto-approve and remain audited.'
+  }
+  if (scope === 'user') {
+    return "Future matching requests from any of this user's agents will auto-approve and remain audited."
+  }
+  return 'Future matching requests from any agent in this org will auto-approve and remain audited.'
 }
 
 export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
@@ -98,6 +108,8 @@ export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
       onStatus(err.message, 'error')
     }
   }
+
+  const rememberScope = modal && modal.startsWith('remember:') ? modal.slice('remember:'.length) : 'org'
 
   const counts = {
     pending: requests.filter((item) => item.status === 'pending').length,
@@ -229,8 +241,8 @@ export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
                           </div>
                           <div className="mono muted">{item.path}</div>
                         </td>
-                        <td className="mono">{item.user_id}</td>
-                        <td className="mono">{item.agent_id}</td>
+                        <td title={item.user_id}>{item.user_display_name || <span className="mono muted">{item.user_id}</span>}</td>
+                        <td title={item.agent_id}>{item.agent_display_name || <span className="mono muted">{item.agent_id}</span>}</td>
                         <td className="mono">{formatTime(item.requested_at)}</td>
                       </tr>
                     ))}
@@ -247,7 +259,7 @@ export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
             <RequestDetail
               request={selectedRequest}
               onApproveOnce={() => setModal('approve')}
-              onApproveOrg={() => setModal('remember')}
+              onApproveRemember={(scope) => setModal(`remember:${scope}`)}
               onDeny={() => {
                 setDenyReason('policy_violation')
                 setDenyNote('')
@@ -300,8 +312,8 @@ export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
       </Modal>
 
       <Modal
-        title="Approve and create org rule"
-        open={modal === 'remember'}
+        title={`Approve and create ${rememberScope} rule`}
+        open={Boolean(modal) && modal.startsWith('remember:')}
         onClose={() => setModal(null)}
         actions={
           <>
@@ -313,8 +325,8 @@ export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
               className="primary"
               onClick={() =>
                 runAction(async () => {
-                  await approveRememberOrg(selectedId)
-                  onStatus('Org allow rule created.', 'ok')
+                  await approveRemember(selectedId, rememberScope)
+                  onStatus(`${rememberScope}-scoped allow rule created.`, 'ok')
                 })
               }
             >
@@ -326,16 +338,14 @@ export function InboxTab({ onStatus, onAuthRequired, refreshToken }) {
         {selectedRequest ? (
           <>
             <p>
-              Create org-scoped allow rule for{' '}
+              Create {rememberScope}-scoped allow rule for{' '}
               <span className="mono">
                 {selectedRequest.method} {selectedRequest.host}:{selectedRequest.port}
                 {selectedRequest.path}
               </span>{' '}
               and approve this request?
             </p>
-            <div className="notice warn">
-              Future matching requests from any agent in this org will auto-approve and remain audited.
-            </div>
+            <div className="notice warn">{rememberScopeDescription(rememberScope)}</div>
           </>
         ) : null}
       </Modal>

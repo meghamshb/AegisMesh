@@ -19,7 +19,7 @@ function formatTime(value) {
 export function RequestDetail({
   request,
   onApproveOnce,
-  onApproveOrg,
+  onApproveRemember,
   onDeny,
 }) {
   if (!request) {
@@ -48,8 +48,8 @@ export function RequestDetail({
         <DetailField label="Method" value={request.method} mono />
         <DetailField label="Path" value={request.path || '/'} mono />
         <DetailField label="Scheme" value={request.scheme} mono />
-        <DetailField label="User" value={request.user_id} mono />
-        <DetailField label="Agent" value={request.agent_id} mono />
+        <DetailField label="User" value={request.user_display_name || request.user_id} mono />
+        <DetailField label="Agent" value={request.agent_display_name || request.agent_id} mono />
         <DetailField label="Organization" value={request.org_id} mono />
         <DetailField label="Requested" value={formatTime(request.requested_at)} mono />
         <DetailField label="Decided by" value={request.decided_by || '—'} mono />
@@ -65,10 +65,26 @@ export function RequestDetail({
         <button
           type="button"
           disabled={rememberDisabled}
-          title={isConnect ? 'CONNECT tunnels cannot be remembered for org' : undefined}
-          onClick={onApproveOrg}
+          title={isConnect ? 'CONNECT tunnels cannot be remembered' : 'Allow this exact pattern for this agent only'}
+          onClick={() => onApproveRemember('agent')}
         >
-          Approve + org rule
+          Allow for this agent
+        </button>
+        <button
+          type="button"
+          disabled={rememberDisabled}
+          title={isConnect ? 'CONNECT tunnels cannot be remembered' : 'Allow this exact pattern for every agent this user owns'}
+          onClick={() => onApproveRemember('user')}
+        >
+          Allow for this user
+        </button>
+        <button
+          type="button"
+          disabled={rememberDisabled}
+          title={isConnect ? 'CONNECT tunnels cannot be remembered' : 'Allow this exact pattern org-wide'}
+          onClick={() => onApproveRemember('org')}
+        >
+          Allow for organization
         </button>
         <button type="button" className="danger" disabled={!isPending} onClick={onDeny}>
           Deny
@@ -77,7 +93,8 @@ export function RequestDetail({
 
       {isPending ? (
         <p className="notice muted">
-          Approve once grants a single retry. Approve + org rule creates a persistent allow pattern for matching future traffic.
+          Approve once grants a single retry. Allow for agent/user/org creates a persistent allow rule at that scope for
+          matching future traffic.
         </p>
       ) : (
         <p className="notice muted">This request is closed. Refresh the queue if another reviewer may have acted.</p>

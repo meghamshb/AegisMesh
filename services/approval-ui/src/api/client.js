@@ -35,6 +35,16 @@ export class ApiError extends Error {
   }
 }
 
+// Server errors come back as {"error":{"code","message"}}; a couple of
+// hand-written client-side fallbacks below still pass a plain string. This
+// normalizes either shape into a plain message string.
+function errorMessage(body, fallback) {
+  const err = body && body.error
+  if (!err) return fallback
+  if (typeof err === 'string') return err
+  return err.message || fallback
+}
+
 export async function apiFetch(path, options = {}) {
   const auth = getAuth()
   const headers = authHeaders(auth, Boolean(options.body))
@@ -49,13 +59,13 @@ export async function apiFetch(path, options = {}) {
   const body = await response.json().catch(() => ({}))
 
   if (response.status === 401) {
-    throw new ApiError(body.error || 'Admin token required', 401)
+    throw new ApiError(errorMessage(body, 'Admin token required'), 401)
   }
   if (response.status === 409) {
-    throw new ApiError(body.error || 'Request already decided by another reviewer', 409)
+    throw new ApiError(errorMessage(body, 'Request already decided by another reviewer'), 409)
   }
   if (!response.ok) {
-    throw new ApiError(body.error || `Request failed (${response.status})`, response.status)
+    throw new ApiError(errorMessage(body, `Request failed (${response.status})`), response.status)
   }
 
   return body
@@ -93,9 +103,13 @@ export async function approveOnce(id) {
 }
 
 export async function approveRememberOrg(id) {
+  return approveRemember(id, 'org')
+}
+
+export async function approveRemember(id, scope) {
   return apiFetch(`/api/v1/requests/${id}/approve`, {
     method: 'POST',
-    body: JSON.stringify({ remember: true, scope: 'org' }),
+    body: JSON.stringify({ remember: true, scope }),
   })
 }
 
@@ -106,6 +120,72 @@ export async function denyRequest(id, feedback) {
   })
 }
 
+export async function createRule(rule) {
+  return apiFetch('/api/v1/rules', {
+    method: 'POST',
+    body: JSON.stringify(rule),
+  })
+}
+
 export async function revokeRule(id) {
   return apiFetch(`/api/v1/rules/${id}`, { method: 'DELETE' })
+}
+
+export async function listUsers(filters = {}) {
+  const params = new URLSearchParams({ limit: '200' })
+  if (filters.status) params.set('status', filters.status)
+  const body = await apiFetch(`/api/v1/users?${params}`)
+  return body.items || []
+}
+
+export async function getUser(id) {
+  return apiFetch(`/api/v1/users/${id}`)
+}
+
+export async function createUser({ displayName, email, role }) {
+  return apiFetch('/api/v1/users', {
+    method: 'POST',
+    body: JSON.stringify({ display_name: displayName, email: email || undefined, role }),
+  })
+}
+
+export async function setUserStatus(id, status) {
+  return apiFetch(`/api/v1/users/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  })
+}
+
+export async function listAgents(filters = {}) {
+  const params = new URLSearchParams({ limit: '200' })
+  if (filters.userId) params.set('user_id', filters.userId)
+  if (filters.status) params.set('status', filters.status)
+  const body = await apiFetch(`/api/v1/agents?${params}`)
+  return body.items || []
+}
+
+export async function getAgent(id) {
+  return apiFetch(`/api/v1/agents/${id}`)
+}
+
+export async function registerAgent({ ownerUserId, name }) {
+  return apiFetch('/api/v1/agents', {
+    method: 'POST',
+    body: JSON.stringify({ owner_user_id: ownerUserId, name }),
+  })
+}
+
+export async function renameAgent(id, name) {
+  return apiFetch(`/api/v1/agents/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export async function rotateAgentCredential(id) {
+  return apiFetch(`/api/v1/agents/${id}/credentials/rotate`, { method: 'POST' })
+}
+
+export async function revokeAgent(id) {
+  return apiFetch(`/api/v1/agents/${id}/revoke`, { method: 'POST' })
 }

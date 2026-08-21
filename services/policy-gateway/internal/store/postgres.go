@@ -41,16 +41,19 @@ func (p *Postgres) Ping(ctx context.Context) error {
 
 func (p *Postgres) ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error) {
 	baseQuery := `
-		SELECT id, agent_id, user_id, org_id, method, host, port, path, scheme,
-		       status, rule_id, requested_at, decided_at, decided_by, error_message, consumed_at
-		FROM egress_requests
-		WHERE ($1 = '' OR status = $1)
-		  AND ($2 = '' OR host ILIKE '%' || $2 || '%')
-		  AND ($3 = '' OR user_id::text = $3)
-		  AND ($4 = '' OR agent_id::text = $4)
-		  AND ($5::timestamptz IS NULL OR requested_at >= $5)
-		  AND ($6::timestamptz IS NULL OR requested_at <= $6)
-		ORDER BY requested_at DESC
+		SELECT er.id, er.agent_id, er.user_id, er.org_id, er.method, er.host, er.port, er.path, er.scheme,
+		       er.status, er.rule_id, er.requested_at, er.decided_at, er.decided_by, er.error_message, er.consumed_at,
+		       COALESCE(u.display_name, ''), COALESCE(ag.name, '')
+		FROM egress_requests er
+		LEFT JOIN actors u ON u.id = er.user_id
+		LEFT JOIN agents ag ON ag.id = er.agent_id
+		WHERE ($1 = '' OR er.status = $1)
+		  AND ($2 = '' OR er.host ILIKE '%' || $2 || '%')
+		  AND ($3 = '' OR er.user_id::text = $3)
+		  AND ($4 = '' OR er.agent_id::text = $4)
+		  AND ($5::timestamptz IS NULL OR er.requested_at >= $5)
+		  AND ($6::timestamptz IS NULL OR er.requested_at <= $6)
+		ORDER BY er.requested_at DESC
 		LIMIT $7 OFFSET $8
 	`
 	status := ""
@@ -64,7 +67,7 @@ func (p *Postgres) ListRequests(ctx context.Context, in ListRequestsInput) ([]do
 	}
 	defer rows.Close()
 
-	return scanEgressRequests(rows)
+	return scanEnrichedEgressRequests(rows)
 }
 
 // normalizePage applies the default/max limit and floors offset, shared by
@@ -275,13 +278,16 @@ type queryExecutor interface {
 
 func (p *Postgres) GetEgressRequest(ctx context.Context, id string) (domain.EgressRequest, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id, agent_id, user_id, org_id, method, host, port, path, scheme,
-		       status, rule_id, requested_at, decided_at, decided_by, error_message, consumed_at
-		FROM egress_requests
-		WHERE id = $1
+		SELECT er.id, er.agent_id, er.user_id, er.org_id, er.method, er.host, er.port, er.path, er.scheme,
+		       er.status, er.rule_id, er.requested_at, er.decided_at, er.decided_by, er.error_message, er.consumed_at,
+		       COALESCE(u.display_name, ''), COALESCE(ag.name, '')
+		FROM egress_requests er
+		LEFT JOIN actors u ON u.id = er.user_id
+		LEFT JOIN agents ag ON ag.id = er.agent_id
+		WHERE er.id = $1
 	`, id)
 
-	req, err := scanEgressRequestRow(row)
+	req, err := scanEnrichedEgressRequestRow(row)
 	if err != nil {
 		if isNoRows(err) {
 			return domain.EgressRequest{}, domain.ErrNotFound{Resource: "egress_request", ID: id}
@@ -1161,37 +1167,13 @@ func nullIfEmpty(value string) any {
 	return value
 }
 
-func scanEgressRequests(rows pgxRows) ([]domain.EgressRequest, error) {
+func scanEnrichedEgressRequests(rows pgxRows) ([]domain.EgressRequest, error) {
 	requests := make([]domain.EgressRequest, 0)
 	for rows.Next() {
-		var req domain.EgressRequest
-		var status string
-		if err := rows.Scan(
-			&req.ID,
-			&req.AgentID,
-			&req.UserID,
-			&req.OrgID,
-			&req.Method,
-			&req.Host,
-			&req.Port,
-			&req.Path,
-			&req.Scheme,
-			&status,
-			&req.RuleID,
-			&req.RequestedAt,
-			&req.DecidedAt,
-			&req.DecidedBy,
-			&req.ErrorMessage,
-			&req.ConsumedAt,
-		); err != nil {
+		req, err := scanEnrichedEgressRequestRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan egress request: %w", err)
 		}
-
-		parsed, err := domain.ParseRequestStatus(status)
-		if err != nil {
-			return nil, err
-		}
-		req.Status = parsed
 		requests = append(requests, req)
 	}
 
@@ -1200,6 +1182,40 @@ func scanEgressRequests(rows pgxRows) ([]domain.EgressRequest, error) {
 	}
 
 	return requests, nil
+}
+
+func scanEnrichedEgressRequestRow(row pgxRow) (domain.EgressRequest, error) {
+	var req domain.EgressRequest
+	var status string
+	if err := row.Scan(
+		&req.ID,
+		&req.AgentID,
+		&req.UserID,
+		&req.OrgID,
+		&req.Method,
+		&req.Host,
+		&req.Port,
+		&req.Path,
+		&req.Scheme,
+		&status,
+		&req.RuleID,
+		&req.RequestedAt,
+		&req.DecidedAt,
+		&req.DecidedBy,
+		&req.ErrorMessage,
+		&req.ConsumedAt,
+		&req.UserDisplayName,
+		&req.AgentDisplayName,
+	); err != nil {
+		return domain.EgressRequest{}, err
+	}
+
+	parsed, err := domain.ParseRequestStatus(status)
+	if err != nil {
+		return domain.EgressRequest{}, err
+	}
+	req.Status = parsed
+	return req, nil
 }
 
 type pgxRow interface {
