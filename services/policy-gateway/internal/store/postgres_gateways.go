@@ -40,7 +40,7 @@ func (p *Postgres) ListGateways(ctx context.Context, orgID string) ([]domain.Gat
 		       policy_version, active_agents, metadata_json, last_seen_at, created_at, revoked_at
 		FROM gateways
 		WHERE org_id = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("query gateways: %w", err)

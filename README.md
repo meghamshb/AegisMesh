@@ -32,6 +32,7 @@ Clearance is the missing layer: **default deny**, **human-in-the-loop approval**
 | **Network lockdown** | Hermes cannot bypass the proxy (Docker + iptables) |
 | **SSRF guard** | Internal upstreams and the control plane hard-denied (no approval queue) |
 | **Rate limiting** | Auth failures and privileged mutations throttled; reads and agent traffic are not |
+| **SSO-ready** | OIDC sign-in for operators (Entra, Google, Auth0, Keycloak); roles stay in Clearance |
 | **Real Hermes runtime** | Terminal + web toolsets; Codex OAuth in pilot profile |
 
 ---
@@ -182,6 +183,31 @@ Postgres, and the cross-tenant test matrix. Phase 5.12 added a reproducible
 egress security evaluation (see Security below).
 
 Still open: SSO / per-caller admin auth, TLS termination, CSV audit export.
+
+---
+
+## Authentication
+
+Two modes, selected by `CLEARANCE_AUTH_MODE`:
+
+| Mode | Use | Notes |
+|---|---|---|
+| `dev-token` | Local development | Shared static token. Cannot attribute an action to a person, so the gateway warns at startup and the console shows a `DEV-TOKEN MODE` badge. |
+| `oidc` | Production | Operators sign in through your identity provider. Provider-neutral — Entra ID, Google, Auth0, Keycloak, Okta. |
+
+```bash
+CLEARANCE_AUTH_MODE=oidc
+OIDC_ISSUER_URL=https://login.microsoftonline.com/<tenant>/v2.0
+OIDC_CLIENT_ID=<application-id>
+```
+
+The identity provider proves **who** you are. Clearance decides **what** you
+may do: roles live in its own directory and are never read from a token claim.
+A verified identity with no Clearance account is refused rather than
+auto-provisioned, so granting access stays a deliberate act.
+
+Agent credentials (`clr_agent_...`) are a separate trust domain and are
+unaffected. Clearance stores no passwords and has no login database.
 
 ---
 

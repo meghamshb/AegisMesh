@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/app"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/auth"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/fleet"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policycache"
@@ -100,6 +101,16 @@ func main() {
 		application = app.New(cfg, logger, st)
 	}
 
+	// Control-plane authentication (Phase 5.13). The data plane is untouched:
+	// agent credentials remain an entirely separate trust domain and never
+	// pass through this resolver.
+	if serving := cfg.Mode == config.ModeAll || cfg.Mode == config.ModeControl; serving {
+		if err := configureControlPlaneAuth(ctx, cfg, application, st, logger); err != nil {
+			logger.Error("configure control-plane authentication", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	addr, handler := selectListener(cfg, application)
 	httpServer := &http.Server{
 		Addr:         addr,
@@ -155,4 +166,47 @@ func schemeOf(raw string) string {
 		return strings.ToLower(raw[:i])
 	}
 	return "none"
+}
+
+// configureControlPlaneAuth wires up whichever authentication mode is
+// configured, and makes the weaker one impossible to run by accident.
+func configureControlPlaneAuth(
+	ctx context.Context,
+	cfg config.Config,
+	application *app.App,
+	st store.Store,
+	logger *slog.Logger,
+) error {
+	if cfg.AuthMode != config.AuthModeOIDC {
+		// §5.13.4: dev-token mode must announce itself. A shared static secret
+		// is a development affordance, not authentication - it cannot identify
+		// who acted, so every audit entry collapses to one synthetic admin.
+		// Silence here is how such a mode ends up in production.
+		logger.Warn("CONTROL PLANE IS IN DEV-TOKEN MODE - not suitable for production",
+			"auth_mode", cfg.AuthMode,
+			"reason", "a shared static token cannot attribute actions to a person",
+			"fix", "set CLEARANCE_AUTH_MODE=oidc with OIDC_ISSUER_URL and OIDC_CLIENT_ID",
+		)
+		if cfg.AdminToken == "" {
+			logger.Warn("GATEWAY_ADMIN_TOKEN is empty - the control plane is UNAUTHENTICATED",
+				"impact", "anyone who can reach this listener can approve egress and mint agent credentials",
+			)
+		}
+		return nil
+	}
+
+	verifier, err := auth.NewOIDCVerifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID, cfg.OIDCAudience)
+	if err != nil {
+		return err
+	}
+
+	// Just-in-time linking binds a first login to an operator-created account.
+	// It never creates accounts, so role assignment stays a deliberate act.
+	application.SetPrincipalResolver(auth.NewResolver(verifier, st, true))
+
+	logger.Info("control-plane authentication configured",
+		"auth_mode", cfg.AuthMode,
+		"issuer", cfg.OIDCIssuerURL,
+	)
+	return nil
 }

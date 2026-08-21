@@ -32,7 +32,7 @@ func (p *Postgres) ListUsers(ctx context.Context, in ListUsersInput) ([]domain.U
 		WHERE org_id = $4
 		  AND type != 'agent'
 		  AND ($1 = '' OR status = $1)
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 		LIMIT $2 OFFSET $3
 	`, in.Status, limit, offset, in.OrgID)
 	if err != nil {
@@ -135,7 +135,7 @@ func (p *Postgres) ListAgents(ctx context.Context, in ListAgentsInput) ([]domain
 		WHERE ag.org_id = $5
 		  AND ($1 = '' OR ag.actor_id::text = $1)
 		  AND ($2 = '' OR ag.status = $2)
-		ORDER BY ag.created_at ASC
+		ORDER BY ag.created_at ASC, ag.id ASC
 		LIMIT $3 OFFSET $4
 	`, in.UserID, in.Status, limit, offset, in.OrgID)
 	if err != nil {
@@ -367,4 +367,93 @@ func enrichAgentAuditMetadata(metadata map[string]any, agentID, name string) map
 		metadata["agent_name"] = name
 	}
 	return metadata
+}
+
+// GetUserByExternalSubject resolves a verified external identity (Phase 5.13)
+// to its Clearance actor.
+//
+// Deliberately not org-scoped: this is the authentication hop that *produces*
+// the caller's organization, so there is no org to filter by yet. Everything
+// the caller does afterwards is scoped to the org this returns.
+func (p *Postgres) GetUserByExternalSubject(ctx context.Context, externalSubject string) (domain.User, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id, org_id, display_name, email, role, status, external_subject, created_at, updated_at
+		FROM actors
+		WHERE external_subject = $1 AND type != 'agent'
+	`, externalSubject)
+
+	user, err := scanUserRow(row)
+	if err != nil {
+		if isNoRows(err) {
+			return domain.User{}, domain.ErrNotFound{Resource: "user", ID: "external_subject"}
+		}
+		return domain.User{}, fmt.Errorf("get user by external subject: %w", err)
+	}
+	return user, nil
+}
+
+// GetUserByEmail resolves an actor by email for just-in-time linking of a
+// first OIDC login to a pre-created account.
+//
+// Email is not unique across organizations, and an ambiguous match must not be
+// resolved arbitrarily - picking one would let an account in org A be claimed
+// by an identity intended for org B. Ambiguity is reported as an error so the
+// caller refuses rather than guesses.
+func (p *Postgres) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, org_id, display_name, email, role, status, external_subject, created_at, updated_at
+		FROM actors
+		WHERE lower(email) = lower($1) AND type != 'agent'
+		LIMIT 2
+	`, email)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("get user by email: %w", err)
+	}
+	defer rows.Close()
+
+	var found []domain.User
+	for rows.Next() {
+		user, scanErr := scanUserRow(rows)
+		if scanErr != nil {
+			return domain.User{}, fmt.Errorf("scan user by email: %w", scanErr)
+		}
+		found = append(found, user)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.User{}, fmt.Errorf("iterate users by email: %w", err)
+	}
+
+	switch len(found) {
+	case 0:
+		return domain.User{}, domain.ErrNotFound{Resource: "user", ID: "email"}
+	case 1:
+		return found[0], nil
+	default:
+		return domain.User{}, domain.ErrAmbiguousEmail{Email: email}
+	}
+}
+
+// LinkExternalSubject binds a verified external identity to an actor, but only
+// if that actor has no external identity yet.
+//
+// The NULL check is the security-relevant part: without it, a second identity
+// provider (or a re-registered subject at the same provider) could rebind an
+// existing account and inherit its role. Rebinding is an operator action, not
+// something a login should be able to do.
+func (p *Postgres) LinkExternalSubject(ctx context.Context, orgID, userID, externalSubject string) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE actors
+		SET external_subject = $3, updated_at = NOW()
+		WHERE id = $1
+		  AND org_id = $2
+		  AND type != 'agent'
+		  AND (external_subject IS NULL OR external_subject = '')
+	`, userID, orgID, externalSubject)
+	if err != nil {
+		return fmt.Errorf("link external subject: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound{Resource: "user", ID: userID}
+	}
+	return nil
 }

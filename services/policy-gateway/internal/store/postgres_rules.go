@@ -40,7 +40,7 @@ func (p *Postgres) ListRules(ctx context.Context, in ListRulesInput) ([]domain.P
 		    OR ($5 IS TRUE AND (r.expires_at IS NULL OR r.expires_at > NOW()))
 		    OR ($5 IS FALSE AND r.expires_at IS NOT NULL AND r.expires_at <= NOW())
 		  )
-		ORDER BY r.created_at DESC
+		ORDER BY r.created_at DESC, r.id DESC
 		LIMIT $6 OFFSET $7
 	`, in.Scope, in.ScopeRefID, in.Effect, in.Host, active, limit, offset, in.OrgID)
 	if err != nil {
@@ -116,7 +116,7 @@ func (p *Postgres) MatchRules(ctx context.Context, in MatchRulesInput) ([]domain
 		    OR (scope = 'user' AND scope_ref_id = $6)
 		    OR (scope = 'agent' AND scope_ref_id = $7)
 		  )
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, in.OrgID, in.Host, in.Port, in.Method, in.Path, in.UserID, in.AgentID)
 	if err != nil {
 		return nil, fmt.Errorf("match policy rules: %w", err)
@@ -313,7 +313,7 @@ func (p *Postgres) ListRulesForOrgSnapshot(ctx context.Context, orgID string) ([
 		FROM policy_rules
 		WHERE org_id = $1
 		  AND (expires_at IS NULL OR expires_at > NOW())
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("query org policy snapshot rules: %w", err)

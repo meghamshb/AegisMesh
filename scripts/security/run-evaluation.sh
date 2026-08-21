@@ -172,7 +172,15 @@ SQL
 
 export GATEWAY_A_TOKEN="$GW_A_TOKEN" GATEWAY_B_TOKEN="$GW_B_TOKEN"
 $COMPOSE up -d --build gateway-a gateway-b hermes-a >/dev/null 2>&1
-sleep 12
+
+# Same reasoning as the fleet smoke: wait for readiness rather than guessing.
+for _ in $(seq 1 40); do
+  if $COMPOSE logs gateway-a 2>&1 | grep -Fq "policy snapshot loaded" &&
+     $COMPOSE exec -T hermes-a true >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
 
 echo "  stack ready (agent=${AGENT_A_ID}, gateway=${GW_A_ID})"
 

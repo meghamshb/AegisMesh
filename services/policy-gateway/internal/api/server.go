@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/auth"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
@@ -37,6 +38,18 @@ type Server struct {
 	// revoke access. Ordinary reads are not limited.
 	authFailures *ratelimit.Limiter
 	mutations    *ratelimit.Limiter
+
+	// principals resolves an OIDC bearer token to a Principal. Nil in
+	// dev-token mode, where the shared static token is used instead.
+	principals *auth.Resolver
+}
+
+// WithPrincipalResolver installs the OIDC resolver used by
+// CLEARANCE_AUTH_MODE=oidc. Kept as a setter rather than a New parameter so
+// dev-token deployments construct the server exactly as before.
+func (s *Server) WithPrincipalResolver(r *auth.Resolver) *Server {
+	s.principals = r
+	return s
 }
 
 func New(cfg config.Config, logger *slog.Logger, st store.Store, egress *service.EgressService, identitySvc *identity.Service) *Server {
@@ -68,6 +81,10 @@ func (s *Server) HealthHandler() http.Handler {
 
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	// Unauthenticated by design: the UI must be able to discover how to
+	// authenticate before it has authenticated. It exposes only the mode and
+	// public client configuration, never a secret.
+	s.mux.HandleFunc("GET /api/v1/auth/config", s.handleAuthConfig)
 	s.mux.HandleFunc("GET /api/v1/requests", s.handleListRequests)
 	s.mux.HandleFunc("GET /api/v1/rules", s.handleListRules)
 	s.mux.HandleFunc("GET /api/v1/audit", s.handleListAudit)
@@ -139,25 +156,82 @@ func proxyState(enabled bool) string {
 // Principal. Every tenant-scoped handler starts here and takes the org it
 // operates on from principal.OrgID - never from a request body, path, or query
 // parameter, so a caller cannot name someone else's tenant.
+//
+// Which mode applies is decided by CLEARANCE_AUTH_MODE (Phase 5.13). Both
+// modes converge on the same domain.Principal, so no handler and no policy
+// code knows or cares which one authenticated the request.
 func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request) (domain.Principal, bool) {
+	if s.cfg.AuthMode == config.AuthModeOIDC {
+		return s.oidcPrincipal(w, r)
+	}
 	if !s.authorizeAdmin(w, r) {
 		return domain.Principal{}, false
 	}
-	return s.currentPrincipal(r), true
+	return s.devTokenPrincipal(r), true
 }
 
-// currentPrincipal builds the control-plane caller's identity. Until Phase
-// 5.13 wires up real per-caller authentication, every request that passes
-// authorizeAdmin is treated as a single org-wide admin - but handlers call
-// through Principal's Can* methods and read Principal.OrgID rather than
-// hardcoding either, so swapping in real multi-principal auth later won't
-// require touching them.
-func (s *Server) currentPrincipal(r *http.Request) domain.Principal {
+// oidcPrincipal resolves a verified OIDC token to the actor it represents.
+//
+// The failure responses here are deliberately uniform: an unknown subject, a
+// disabled user, and an ambiguous email all return 403 with a generic message.
+// Distinguishing them would let an unauthenticated caller probe which
+// identities exist in the deployment.
+func (s *Server) oidcPrincipal(w http.ResponseWriter, r *http.Request) (domain.Principal, bool) {
+	if s.principals == nil {
+		s.logger.Error("oidc auth mode is configured but no principal resolver was installed")
+		s.writeError(w, http.StatusInternalServerError, "authentication is misconfigured")
+		return domain.Principal{}, false
+	}
+
+	token := bearerToken(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	principal, err := s.principals.Resolve(ctx, token)
+	if err == nil {
+		return principal, true
+	}
+
+	if !s.authFailures.Allow(ratelimit.ClientKey(r)) {
+		s.writeError(w, http.StatusTooManyRequests, "too many authentication failures; retry later")
+		return domain.Principal{}, false
+	}
+
+	switch {
+	case errors.Is(err, auth.ErrNoCredential), errors.Is(err, auth.ErrInvalidToken):
+		w.Header().Set("WWW-Authenticate", `Bearer realm="clearance", error="invalid_token"`)
+		s.writeError(w, http.StatusUnauthorized, "a valid bearer token is required")
+	default:
+		// Verified identity, but not authorized to use this deployment.
+		s.logger.Warn("rejected authenticated identity", "error", err)
+		s.writeError(w, http.StatusForbidden, "this identity is not provisioned for access")
+	}
+	return domain.Principal{}, false
+}
+
+// devTokenPrincipal is the pre-5.13 behavior: a single shared admin token
+// stands in for every operator, so there is exactly one principal and its org
+// comes from process configuration rather than from the caller.
+func (s *Server) devTokenPrincipal(r *http.Request) domain.Principal {
 	return domain.Principal{
 		ActorID: s.approverID(r),
 		OrgID:   s.cfg.Identity.OrgID,
 		Role:    domain.RoleAdmin,
 	}
+}
+
+// currentPrincipal is retained for callers that only need the shape of the
+// caller rather than a full authentication decision.
+func (s *Server) currentPrincipal(r *http.Request) domain.Principal {
+	return s.devTokenPrincipal(r)
+}
+
+func bearerToken(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(header[len("Bearer "):])
 }
 
 func (s *Server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
@@ -167,10 +241,7 @@ func (s *Server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
 
 	token := strings.TrimSpace(r.Header.Get("X-Admin-Token"))
 	if token == "" {
-		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			token = strings.TrimSpace(authHeader[7:])
-		}
+		token = bearerToken(r)
 	}
 	if token != s.cfg.AdminToken {
 		// Count the failure before reporting it, so repeated guessing from one

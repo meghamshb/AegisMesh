@@ -111,6 +111,16 @@ func (Stub) GetUser(context.Context, string, string) (domain.User, error) {
 	return domain.User{}, nil
 }
 
+func (Stub) GetUserByExternalSubject(context.Context, string) (domain.User, error) {
+	return domain.User{}, nil
+}
+
+func (Stub) GetUserByEmail(context.Context, string) (domain.User, error) {
+	return domain.User{}, nil
+}
+
+func (Stub) LinkExternalSubject(context.Context, string, string, string) error { return nil }
+
 func (Stub) CreateUser(context.Context, store.CreateUserInput) (domain.User, error) {
 	return domain.User{}, nil
 }

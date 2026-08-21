@@ -514,3 +514,38 @@ table.data-table tbody tr.selected {
   border-top: 1px solid var(--border);
   font-size: 11px;
 }
+
+/* Phase 5.13: dev-token mode is a development affordance, not authentication.
+   It is surfaced persistently in the toolbar rather than only inside the
+   modal, because the failure mode being guarded against is someone not
+   realising which mode a deployment is running in. */
+.dev-mode-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--status-pending-bg);
+  color: var(--text);
+}
+
+.notice.warn {
+  border-left: 3px solid var(--border);
+  background: var(--status-pending-bg);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0.5rem 0;
+  font-size: 12px;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+}

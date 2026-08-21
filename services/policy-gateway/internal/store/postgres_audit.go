@@ -18,7 +18,7 @@ func (p *Postgres) ListAuditEvents(ctx context.Context, in ListAuditEventsInput)
 		  AND ($2 = '' OR actor_id::text = $2)
 		  AND ($3::timestamptz IS NULL OR created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR created_at <= $4)
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT $5 OFFSET $6
 	`, in.EventType, in.ActorID, in.From, in.To, limit, offset, in.OrgID)
 	if err != nil {

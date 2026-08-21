@@ -6,8 +6,8 @@
   Every number below is computed from measured test results.
 -->
 
-- **Generated:** 2026-08-21 19:07 UTC
-- **Commit:** `9e8832a`
+- **Generated:** 2026-08-21 19:41 UTC
+- **Commit:** `f8a02ab`
 - **Gateway version:** `dev`
 - **Harness:** `scripts/security/run-evaluation.sh`
 

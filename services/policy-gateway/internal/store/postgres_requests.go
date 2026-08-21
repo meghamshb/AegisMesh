@@ -23,7 +23,7 @@ func (p *Postgres) ListRequests(ctx context.Context, in ListRequestsInput) ([]do
 		  AND ($4 = '' OR er.agent_id::text = $4)
 		  AND ($5::timestamptz IS NULL OR er.requested_at >= $5)
 		  AND ($6::timestamptz IS NULL OR er.requested_at <= $6)
-		ORDER BY er.requested_at DESC
+		ORDER BY er.requested_at DESC, er.id DESC
 		LIMIT $7 OFFSET $8
 	`
 	status := ""

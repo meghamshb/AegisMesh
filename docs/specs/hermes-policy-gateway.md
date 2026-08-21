@@ -681,7 +681,8 @@ Hermes needs LLM access. Options:
 | 5.10 Multi-gateway fleet | **Done** | Snapshot-backed evaluation, `docker-compose.fleet.yml`, `make smoke-fleet`, Gateways tab |
 | 5.11 Security hardening | **Done** | SSRF-to-control-plane fix, rate limits, credential hygiene, cross-tenant tests |
 | 5.12 Security evaluation suite | **Done** | `scripts/security/`, generated evaluation report, CI |
-| 5.13+ Remaining | **Not started** | Production-auth seam (SSO), final demo/release |
+| 5.13 Production-auth seam | **Done** | `CLEARANCE_AUTH_MODE=dev-token\|oidc`, OIDC verification, external-subject mapping |
+| 5.14 Final demo, docs, release | **Not started** | |
 
 Verify: `make smoke` from repo root (requires running stack).
 
@@ -1397,6 +1398,116 @@ its own non-blocking job: a slow or flaky security suite that blocks every
 commit gets disabled, and a disabled suite protects nothing. Its regenerated
 report is uploaded as an artifact, and drift from the committed version is
 surfaced as a warning. No job needs a paid or external API.
+
+---
+
+## Phase 5.13 — Production-auth seam (implemented)
+
+`CLEARANCE_AUTH_MODE` selects how control-plane callers authenticate:
+`dev-token` (the pre-5.13 shared secret) or `oidc` (a verified JWT from an
+identity provider). There is deliberately no third option that disables
+authentication.
+
+### Authentication is not authorization
+
+The split this phase exists to enforce:
+
+| | Source |
+|---|---|
+| **Who is calling** | The identity provider, via a verified token |
+| **What they may do** | `actors.role` in Clearance's own database |
+
+A provider can prove someone is alice@example.com. It must not be able to
+decide that alice is an admin here - otherwise whoever controls a role claim
+controls Clearance. `auth.Claims` has no `Role` field at all, so the code
+cannot accidentally trust one.
+
+### The identity mapping
+
+```
+JWT (issuer, subject) -> "<issuer>#<subject>" -> actors.external_subject -> actor -> role, org
+```
+
+The issuer is part of the key on purpose. A bare subject is only unique
+*within* an issuer, so storing `alice-123` alone would let a second,
+attacker-controlled issuer mint a token with the same subject and inherit the
+account. Migration `013` adds a **unique** partial index on
+`external_subject`, because two actors claiming one identity would make the
+resolved account depend on row order - a silent privilege escalation if either
+is an admin.
+
+### What linking will and will not do
+
+- **Will** bind a first login to an operator-created account, when the token
+  carries a *verified* email that matches exactly one unlinked actor.
+- **Will not** create accounts. Auto-provisioning would mean everyone the
+  provider will issue a token for silently gains access with whatever default
+  role was picked. Role assignment stays a deliberate act.
+- **Will not** accept an unverified email - that is an assertion the provider
+  itself will not stand behind.
+- **Will not** rebind an already-linked account, which would let a second
+  identity inherit an existing role.
+- **Will not** resolve an ambiguous email. Email is unique per organization,
+  not globally; picking one match would let an account in org A be claimed by
+  an identity meant for org B.
+
+### Verification is delegated, not hand-rolled
+
+Signature, issuer, audience, and expiry checks go through
+`github.com/coreos/go-oidc`. JWT verification looks simple and is not: the
+classic failures are algorithm confusion (`alg: none`, or an HMAC token
+verified with a public key as the secret), skipped audience checks, and JWKS
+rotation. The tests mint **real RSA-signed tokens** against a locally served
+JWKS and assert each of those is rejected, so the rejections are genuine rather
+than a stub agreeing with itself.
+
+Nothing in the code is provider-specific (§5.13.3): discovery, key fetching,
+and claim names are standard OIDC.
+
+### This closes the tenancy limitation
+
+The "Known limitation" recorded in the tenant-isolation contract - that
+`Principal.OrgID` came from the process-wide `GATEWAY_ORG_ID` - no longer
+applies in OIDC mode. The caller's organization now comes from their own actor
+row, so one control plane genuinely serves several organizations. Because
+every tenant-owned query was already org-scoped in the hardening pass, this was
+a change to how the Principal is built, not a re-audit of the data layer.
+
+In `dev-token` mode the limitation stands, which is one more reason that mode
+warns at startup.
+
+### Fail-closed startup
+
+- An unreachable identity provider is fatal at boot: a control plane that
+  cannot verify anyone must not start and silently accept nothing, or fall back
+  to a weaker mode.
+- `CLEARANCE_AUTH_MODE=oidc` without an issuer is rejected by config validation.
+- An unrecognised mode is rejected outright.
+- `dev-token` logs a prominent warning, and an empty `GATEWAY_ADMIN_TOKEN` logs
+  a second one saying the control plane is unauthenticated.
+
+### Agent credentials are untouched
+
+`clr_agent_...` and `clr_gateway_...` remain an entirely separate trust domain.
+They never pass through the OIDC path, and no human credential is ever stored:
+there is no password table, registration, reset, or verification anywhere in
+this codebase (§5.13.1).
+
+### UI
+
+The console asks `GET /api/v1/auth/config` - unauthenticated by design, since
+it must know how to authenticate before it holds a credential - and adapts:
+
+- **oidc, already authenticated** (the identity-aware-proxy deployment: oauth2-proxy,
+  Entra Application Proxy, Cloudflare Access): no credential prompt at all,
+  just a panel showing the issuer and where roles come from.
+- **oidc, not authenticated**: explains the sign-in flow, and offers a
+  paste-an-access-token field for direct API use. No approver field - identity
+  comes from the verified token, so letting the browser assert an actor id
+  would undo the whole point.
+- **dev-token**: a persistent `DEV-TOKEN MODE` badge in the toolbar plus a
+  warning in the modal. The badge is deliberately always visible; the failure
+  being guarded against is nobody realising which mode a deployment is in.
 
 ---
 

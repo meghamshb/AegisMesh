@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/api"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/auth"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
@@ -159,4 +160,11 @@ func (r *statusRecorder) Flush() {
 	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// SetPrincipalResolver installs the control-plane OIDC resolver
+// (CLEARANCE_AUTH_MODE=oidc). Only the control-plane surface consults it; the
+// data plane authenticates agents by credential and never goes through here.
+func (a *App) SetPrincipalResolver(r *auth.Resolver) {
+	a.api.WithPrincipalResolver(r)
 }

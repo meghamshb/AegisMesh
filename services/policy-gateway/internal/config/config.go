@@ -29,6 +29,12 @@ const (
 	defaultAgentIdentityCacheTTL = 10 * time.Second
 	defaultHeartbeatInterval     = 10 * time.Second
 
+	// Control-plane authentication modes (Phase 5.13). dev-token keeps the
+	// shared static token for local work; oidc requires a verified JWT from a
+	// real identity provider. There is deliberately no "off".
+	AuthModeDevToken = "dev-token"
+	AuthModeOIDC     = "oidc"
+
 	// Rate limits (Phase 5.11.2). Generous enough that an operator clicking
 	// through the console never notices, tight enough that credential
 	// guessing and bulk credential minting are not free.
@@ -76,6 +82,10 @@ type Config struct {
 	PolicyMaxStale        time.Duration
 	AgentIdentityCacheTTL time.Duration
 	HeartbeatInterval     time.Duration
+	AuthMode              string
+	OIDCIssuerURL         string
+	OIDCClientID          string
+	OIDCAudience          string
 	AuthFailureLimit      int
 	MutationLimit         int
 	RateLimitWindow       time.Duration
@@ -179,6 +189,10 @@ func Load() (Config, error) {
 		PolicyMaxStale:        policyMaxStale,
 		AgentIdentityCacheTTL: agentIdentityCacheTTL,
 		HeartbeatInterval:     heartbeatInterval,
+		AuthMode:              envOrDefault("CLEARANCE_AUTH_MODE", AuthModeDevToken),
+		OIDCIssuerURL:         strings.TrimSpace(os.Getenv("OIDC_ISSUER_URL")),
+		OIDCClientID:          strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID")),
+		OIDCAudience:          strings.TrimSpace(os.Getenv("OIDC_AUDIENCE")),
 		AuthFailureLimit:      authFailureLimit,
 		MutationLimit:         mutationLimit,
 		RateLimitWindow:       rateLimitWindow,
@@ -186,6 +200,21 @@ func Load() (Config, error) {
 
 	if cfg.PostgresDSN == "" {
 		return Config{}, fmt.Errorf("POSTGRES_DSN must not be empty")
+	}
+	switch cfg.AuthMode {
+	case AuthModeDevToken:
+		// Nothing further required; the dev token may still be empty, which
+		// leaves the control plane open. main.go warns loudly about both.
+	case AuthModeOIDC:
+		if cfg.OIDCIssuerURL == "" {
+			return Config{}, fmt.Errorf("OIDC_ISSUER_URL is required when CLEARANCE_AUTH_MODE=%s", AuthModeOIDC)
+		}
+		if cfg.OIDCClientID == "" && cfg.OIDCAudience == "" {
+			return Config{}, fmt.Errorf("OIDC_CLIENT_ID or OIDC_AUDIENCE is required when CLEARANCE_AUTH_MODE=%s", AuthModeOIDC)
+		}
+	default:
+		return Config{}, fmt.Errorf("CLEARANCE_AUTH_MODE must be %q or %q, got %q",
+			AuthModeDevToken, AuthModeOIDC, cfg.AuthMode)
 	}
 	if cfg.Identity.OrgID == "" || cfg.Identity.UserID == "" || cfg.Identity.AgentID == "" {
 		return Config{}, fmt.Errorf("GATEWAY_ORG_ID, GATEWAY_USER_ID, and GATEWAY_AGENT_ID must not be empty")

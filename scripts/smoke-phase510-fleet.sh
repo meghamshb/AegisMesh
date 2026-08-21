@@ -108,11 +108,21 @@ echo "  GatewayA=${gw_a_id}  GatewayB=${gw_b_id}"
 export GATEWAY_A_TOKEN="$gw_a_token"
 export GATEWAY_B_TOKEN="$gw_b_token"
 $COMPOSE up -d --build gateway-a gateway-b >/dev/null
-sleep 8
 
+# Wait for the snapshot rather than sleeping a fixed amount. A cold image build
+# takes longer than a warm one, and a smoke test that fails only on the first
+# run is worse than no smoke test - it teaches people to re-run instead of
+# reading the failure.
 for gw in gateway-a gateway-b; do
-  $COMPOSE logs "$gw" 2>&1 | grep -Fq "policy snapshot loaded" ||
-    fail "$gw did not load an initial policy snapshot"
+  ready=0
+  for _ in $(seq 1 30); do
+    if $COMPOSE logs "$gw" 2>&1 | grep -Fq "policy snapshot loaded"; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+  [ "$ready" = "1" ] || fail "$gw did not load an initial policy snapshot within 60s"
 done
 echo "PASS: both gateways registered and loaded an initial snapshot"
 

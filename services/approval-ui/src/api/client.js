@@ -19,6 +19,9 @@ export function authHeaders({ token, approver }, includeJson = false) {
     headers['Content-Type'] = 'application/json'
   }
   if (token) {
+    // Sent as both because the two modes read different headers. In OIDC mode
+    // the server ignores X-Admin-Token entirely, so this stays correct either
+    // way without the client having to know the mode before its first call.
     headers.Authorization = `Bearer ${token}`
     headers['X-Admin-Token'] = token
   }
@@ -26,6 +29,48 @@ export function authHeaders({ token, approver }, includeJson = false) {
     headers['X-Gateway-Approver'] = approver
   }
   return headers
+}
+
+// Cached because every tab render would otherwise re-request it; the mode
+// cannot change without a server restart.
+let cachedAuthConfig = null
+
+// fetchAuthConfig asks the server how to authenticate. It is deliberately
+// unauthenticated, so it works before the console holds any credential.
+export async function fetchAuthConfig() {
+  if (cachedAuthConfig) {
+    return cachedAuthConfig
+  }
+  try {
+    const res = await fetch('/api/v1/auth/config')
+    if (!res.ok) {
+      throw new Error(`status ${res.status}`)
+    }
+    cachedAuthConfig = await res.json()
+  } catch {
+    // An older server has no such endpoint. Assume the pre-5.13 behaviour
+    // rather than locking the operator out of a console that would work.
+    cachedAuthConfig = { mode: 'dev-token', dev_token_required: true }
+  }
+  return cachedAuthConfig
+}
+
+// probeAuthenticated reports whether the browser can already reach the control
+// plane without the console supplying anything.
+//
+// This is what makes the token modal unnecessary in OIDC mode: a deployment
+// behind an identity-aware proxy (oauth2-proxy, Entra Application Proxy,
+// Cloudflare Access) already carries a verified Authorization header on every
+// request, so the console has nothing to ask for.
+export async function probeAuthenticated() {
+  try {
+    const res = await fetch('/api/v1/organizations/current', {
+      headers: authHeaders(getAuth()),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
 }
 
 export class ApiError extends Error {

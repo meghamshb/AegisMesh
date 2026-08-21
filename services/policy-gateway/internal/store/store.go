@@ -28,6 +28,9 @@ import (
 //     the authenticator, and these run *before* any caller org is known.
 //   - ResolveAgentForAuth: the credential-to-agent hop *inside* authentication,
 //     which is what produces the org in the first place.
+//   - GetUserByExternalSubject / GetUserByEmail: the same hop for human
+//     callers (Phase 5.13) - an OIDC subject resolves to an actor, and that
+//     actor is what determines the caller's org.
 //   - TouchAgentLastSeen / TouchAgentCredentialLastUsed: post-authentication
 //     bookkeeping on the caller's own already-verified row.
 
@@ -217,6 +220,9 @@ type Store interface {
 	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
 	ListUsers(ctx context.Context, in ListUsersInput) ([]domain.User, error)
 	GetUser(ctx context.Context, orgID, id string) (domain.User, error)
+	GetUserByExternalSubject(ctx context.Context, externalSubject string) (domain.User, error)
+	GetUserByEmail(ctx context.Context, email string) (domain.User, error)
+	LinkExternalSubject(ctx context.Context, orgID, userID, externalSubject string) error
 	CreateUser(ctx context.Context, in CreateUserInput) (domain.User, error)
 	UpdateUser(ctx context.Context, orgID, id string, in UpdateUserInput) (domain.User, error)
 	ListAgents(ctx context.Context, in ListAgentsInput) ([]domain.Agent, error)
