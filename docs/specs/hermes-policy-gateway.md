@@ -678,7 +678,8 @@ Hermes needs LLM access. Options:
 | 5.8 Control/data-plane split | **Done** | `CLEARANCE_MODE=all\|control\|gateway` |
 | 5.9 Gateway registration + policy sync | **Done** | `clr_gateway_...`, versioned snapshots, fail-closed |
 | 5.9a Tenant-isolation hardening | **Done** | Every tenant-owned query org-scoped; cross-org test suites |
-| 5.10+ Remaining hardening | **Not started** | SSO, TLS, rate limits, CSV export |
+| 5.10 Multi-gateway fleet | **Done** | Snapshot-backed evaluation, `docker-compose.fleet.yml`, `make smoke-fleet`, Gateways tab |
+| 5.11+ Remaining hardening | **Not started** | SSO, TLS, rate limits, CSV export |
 
 Verify: `make smoke` from repo root (requires running stack).
 
@@ -1021,16 +1022,105 @@ proxied request. This path is opt-in: it only activates when
 single-process deployment is completely unaffected and keeps resolving
 agent identity via a direct Postgres lookup, as before.
 
-### Deliberately deferred to Phase 5.10
+### Resolved in Phase 5.10
 
-Live per-request **policy rule evaluation** (`MatchRules`) still reads
-Postgres directly in every mode, including `gateway` mode with a control
-URL configured. The snapshot cache above is fully built and tested
-end-to-end (fetch, refresh, fail-closed, staleness), but wiring it into the
-hot evaluation path also requires deciding how standing-deny/approve-once
-request-history lookups work for a gateway that no longer holds a direct DB
-connection - that's exactly the kind of decision the multi-gateway fleet
-demo (5.10) will make concrete, rather than guessing at it here.
+The deferral noted here in 5.9 - that live rule evaluation still read Postgres
+directly - is closed. See "Phase 5.10" below.
+
+---
+
+## Phase 5.10 — Multi-gateway fleet (implemented)
+
+The acceptance criterion is a single sentence: **one policy change, made once
+in one browser, controls two physically separate gateway containers without
+restarting either of them.** `make smoke-fleet` proves it end to end.
+
+### What changed: gateways decide from the snapshot
+
+`policy.RuleEngine` gained a `RuleSource` seam:
+
+- `NewRuleEngine(store)` matches rules with SQL - unchanged behaviour, still
+  what `CLEARANCE_MODE=all` uses.
+- `NewSnapshotRuleEngine(snapshots, store)` matches against the locally cached
+  snapshot, and is what a gateway with `CLEARANCE_CONTROL_URL` set uses.
+
+This is what makes the demo mean anything. While gateways evaluated via shared
+SQL, a new rule reached both of them instantly *because they read the same
+database* - which proves nothing about central policy distribution. Now the
+only path a rule can take to a gateway is the versioned snapshot fetch, so the
+delay between "rule created" and "both gateways auto-approve" is real
+propagation.
+
+If the snapshot is missing or stale past `CLEARANCE_POLICY_MAX_STALE`,
+evaluation returns `policy.ErrPolicyUnavailable` and the request fails closed.
+It does **not** fall back to SQL - a silent fallback would quietly defeat the
+fail-closed guarantee from 5.9.
+
+### SQL/Go parity is a tested invariant
+
+The snapshot matcher re-expresses `Postgres.MatchRules`'s WHERE clause in Go.
+Two implementations of one predicate is a standing hazard: if they drift, the
+same request gets one verdict centrally and another at the edge. Two tests pin
+them together:
+
+- `internal/policy/source_test.go` covers each clause individually.
+- `internal/store/policy_parity_integration_test.go` seeds a rule set in real
+  Postgres and runs a matrix of request tuples through *both* implementations,
+  asserting identical match sets and identical decisions.
+
+Any change to one side must be mirrored in the other, or the parity test fails.
+
+### Fleet topology
+
+`docker-compose.fleet.yml`: `postgres`, `control-plane`, `gateway-a`,
+`gateway-b`, `hermes-a`, `hermes-b`, across `control-net`, `gateway-a-net`,
+`gateway-b-net`, and `egress`. Each Hermes container sits alone with its own
+gateway on an internal network, so it can reach neither the internet, nor
+Postgres, nor the other tenant's agent — the Phase 4 bypass-prevention story is
+preserved rather than traded away for convenience.
+
+Gateways still hold a Postgres connection for egress-request rows,
+approve-once grants, standing denies, and audit writes. §5.8.6 permits this
+("gateway → may still read Postgres") and asks for the dependency to be removed
+gradually; 5.10 removes it for *policy decisions*, which is the part that
+matters for central control. Removing it for request-history state is the
+remaining step.
+
+### Fleet visibility
+
+Gateways report themselves via `internal/fleet.Reporter`: it resolves its own
+id from its credential (`GET /api/internal/v1/gateways/self`, added so a fleet
+container need not be told its own UUID through configuration), then heartbeats
+build version, enforced policy version, and distinct agents seen in a trailing
+5-minute window.
+
+Heartbeating is reporting, never enforcement. A gateway that loses the control
+plane keeps enforcing its last-known-good snapshot and merely goes stale in the
+UI, so heartbeat failures are logged and the loop continues.
+
+The Gateways tab shows Gateway / Status / Version / Last seen / Policy version /
+Agents recently seen, with `online` < 30s, `stale` 30s–2m, `offline` > 2m, plus
+`revoked`. **These are display semantics, not security controls** — the tab says
+so inline. Revocation is the only state that actually stops a gateway.
+
+### Two latent bugs this phase surfaced and fixed
+
+Both were pre-existing and both would have broken the demo:
+
+1. **A host-wide allow rule authorized nothing.** The path-boundary check
+   required a `/` immediately after the prefix span, so a `path_prefix` of `/`
+   — the default, meaning "allow this host" — matched only the literal path
+   `/`. It stayed hidden because remembered rules use the request's own full
+   path, which matches exactly. Fixed in both the SQL and the Go matcher
+   together (a prefix already ending in `/` sits on a boundary by construction).
+
+2. **A rule could never be revoked once it had approved anything.**
+   `egress_requests.rule_id` referenced `policy_rules(id)` with no `ON DELETE`
+   action, so revoking a rule that had auto-approved even one request failed
+   with a foreign-key violation and returned 500 — precisely for the rules
+   carrying real traffic. Migration `012` sets `ON DELETE SET NULL`: the egress
+   row is history and survives, the dangling pointer does not, and attribution
+   remains available from `audit_events` metadata.
 
 ---
 

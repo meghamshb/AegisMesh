@@ -78,6 +78,7 @@ func (s *Server) registerRoutes() {
 	// /api/internal/v1/* is the gateway-to-control-plane surface (Phase 5.9).
 	// It is never exposed to the browser and is gated by a gateway
 	// credential (authorizeGateway), not the admin token.
+	s.mux.HandleFunc("GET /api/internal/v1/gateways/self", s.handleGatewaySelf)
 	s.mux.HandleFunc("POST /api/internal/v1/gateways/{id}/heartbeat", s.handleGatewayHeartbeat)
 	s.mux.HandleFunc("GET /api/internal/v1/policies/snapshot", s.handlePolicySnapshot)
 	s.mux.HandleFunc("POST /api/internal/v1/agents/authenticate", s.handleInternalAuthenticateAgent)

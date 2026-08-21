@@ -391,6 +391,24 @@ table.data-table tbody tr.selected {
   background: var(--status-denied-bg);
 }
 
+/* Gateway liveness (Phase 5.10). Deliberately reuses the existing state
+   colours: "online" reads like any other healthy state, "stale" borrows the
+   pending amber, and "offline" is neutral rather than red - a gateway that has
+   stopped checking in is still enforcing its last known policy, so it must not
+   look like a denial. */
+.status-tag.online {
+  background: var(--status-approved-bg);
+}
+
+.status-tag.stale {
+  background: var(--status-pending-bg);
+}
+
+.status-tag.offline {
+  background: var(--status-default-bg);
+  color: var(--muted);
+}
+
 .credential-box {
   padding: 0.5rem 0.65rem;
   background: var(--status-default-bg);
@@ -489,4 +507,10 @@ table.data-table tbody tr.selected {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.panel-foot {
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
 }

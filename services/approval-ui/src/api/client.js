@@ -189,3 +189,8 @@ export async function rotateAgentCredential(id) {
 export async function revokeAgent(id) {
   return apiFetch(`/api/v1/agents/${id}/revoke`, { method: 'POST' })
 }
+
+export async function listGateways() {
+  const body = await apiFetch('/api/v1/gateways')
+  return body.items || []
+}

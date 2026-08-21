@@ -649,3 +649,60 @@ func TestInternalAuthenticateAgentRequiresGatewayCredential(t *testing.T) {
 		t.Fatalf("status = %d, want 401 without a gateway credential", rec.Code)
 	}
 }
+
+// Phase 5.10: a gateway learns its own id from its credential, so a fleet
+// container does not have to be told its UUID through configuration.
+func TestGatewaySelfReturnsTheCredentialsOwnGateway(t *testing.T) {
+	fixtures, token := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/v1/gateways/self", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	var gw domain.Gateway
+	if err := json.Unmarshal(rec.Body.Bytes(), &gw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if gw.ID != "gw-1" {
+		t.Fatalf("id = %q, want gw-1", gw.ID)
+	}
+	// The credential hash must never be serialized back to a caller.
+	if strings.Contains(rec.Body.String(), "credential_hash") {
+		t.Fatalf("gateway self leaked the credential hash: %s", rec.Body.String())
+	}
+}
+
+func TestGatewaySelfRequiresGatewayCredential(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/v1/gateways/self", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a gateway credential", rec.Code)
+	}
+}
+
+// A revoked gateway must not be able to resolve itself either - the whole
+// point of revocation is that the credential stops working everywhere.
+func TestGatewaySelfRejectsRevokedGateway(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/v1/gateways/self", nil)
+	req.Header.Set("Authorization", "Bearer clr_gateway_revoked-token")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a revoked gateway credential", rec.Code)
+	}
+}

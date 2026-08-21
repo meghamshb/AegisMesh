@@ -101,6 +101,13 @@ func (p *Postgres) MatchRules(ctx context.Context, in MatchRulesInput) ([]domain
 		  AND starts_with($5, path_prefix)
 		  AND (
 		    length($5) = length(path_prefix)
+		    -- A prefix already ending in '/' sits on a segment boundary by
+		    -- construction. Without this clause a path_prefix of '/' (the
+		    -- default for a host-wide rule) would match only the literal
+		    -- path '/', since there is no separator after the prefix span
+		    -- to inspect. Kept identical to pathWithinPrefix in
+		    -- internal/policy/source.go.
+		    OR right(path_prefix, 1) = '/'
 		    OR substring($5 from length(path_prefix) + 1 for 1) = '/'
 		  )
 		  AND (expires_at IS NULL OR expires_at > NOW())

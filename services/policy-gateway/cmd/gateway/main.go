@@ -12,6 +12,7 @@ import (
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/app"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/fleet"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policycache"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
@@ -42,15 +43,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Fleet mode (Phase 5.9): a gateway process configured with a control
-	// plane URL must fail closed at cold start if it cannot load an initial
-	// policy snapshot - it must never begin proxying traffic against unknown
-	// policy. This does not yet gate live request evaluation (rule
-	// evaluation still reads Postgres directly in this phase; see
-	// internal/policycache's doc comment), but proves out registration,
-	// versioned snapshot fetch, fail-closed startup, and background refresh
-	// for real, ahead of Phase 5.10's fleet wiring.
-	if cfg.Mode == config.ModeGateway && cfg.ControlPlaneURL != "" {
+	// Fleet mode (Phases 5.9-5.10): a gateway process configured with a
+	// control plane URL fails closed at cold start if it cannot load an
+	// initial policy snapshot - it must never begin proxying traffic against
+	// unknown policy - and from 5.10 it *decides* against that snapshot
+	// rather than querying Postgres, so one central rule change reaches every
+	// gateway on the next refresh without restarting anything.
+	var application *app.App
+	distributed := cfg.Mode == config.ModeGateway && cfg.ControlPlaneURL != ""
+
+	if distributed {
 		cache := policycache.New(
 			policycache.NewHTTPFetcher(cfg.ControlPlaneURL, cfg.GatewayToken),
 			cfg.PolicyMaxStale,
@@ -60,10 +62,30 @@ func main() {
 			logger.Error("policy snapshot unavailable at startup, failing closed", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("policy snapshot loaded", "health", cache.Health())
-	}
+		logger.Info("policy snapshot loaded",
+			"health", cache.Health(),
+			"refresh_interval", cfg.PolicyRefreshInterval,
+		)
 
-	application := app.New(cfg, logger, st)
+		application = app.NewDistributed(cfg, logger, st, cache)
+
+		// Fleet visibility. Reporting only: a gateway that cannot reach the
+		// control plane keeps enforcing its last-known-good snapshot and
+		// simply goes stale in the Gateways tab, so identity failures here
+		// are logged rather than fatal.
+		reporter := fleet.NewReporter(
+			cfg.ControlPlaneURL, cfg.GatewayToken, cfg.ServiceVersion,
+			cache, application.AgentCounter(), logger,
+		)
+		if err := reporter.Identify(ctx); err != nil {
+			logger.Warn("could not resolve gateway identity at startup, will retry on heartbeat", "error", err)
+		} else {
+			logger.Info("gateway identity resolved", "gateway_id", reporter.GatewayID(), "name", reporter.Name())
+		}
+		reporter.Start(ctx, cfg.HeartbeatInterval)
+	} else {
+		application = app.New(cfg, logger, st)
+	}
 
 	addr, handler := selectListener(cfg, application)
 	httpServer := &http.Server{

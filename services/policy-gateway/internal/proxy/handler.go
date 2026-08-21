@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
@@ -38,6 +39,45 @@ type Handler struct {
 	remoteAgentAuth       remoteAgentAuthenticator
 	logger                *slog.Logger
 	transport             *http.Transport
+
+	// recentAgents tracks when each agent was last served, backing the
+	// Gateways tab's "agents recently seen" column (Phase 5.10). It is
+	// observability only - nothing here gates a request.
+	recentAgentsMu sync.Mutex
+	recentAgents   map[string]time.Time
+}
+
+// recentAgentWindow is how far back "recently seen" looks. A rolling window
+// rather than a drain-on-read counter: heartbeats are frequent, so draining
+// would report 0 for every beat that happened to follow a quiet second, making
+// a busy gateway look idle.
+const recentAgentWindow = 5 * time.Minute
+
+// noteAgentSeen records that an agent was served just now.
+func (h *Handler) noteAgentSeen(agentID string) {
+	if agentID == "" {
+		return
+	}
+	h.recentAgentsMu.Lock()
+	defer h.recentAgentsMu.Unlock()
+	if h.recentAgents == nil {
+		h.recentAgents = map[string]time.Time{}
+	}
+	h.recentAgents[agentID] = time.Now()
+}
+
+// DrainRecentAgentCount returns the number of distinct agents served within the
+// trailing window, evicting anything older. Implements fleet.AgentCounter.
+func (h *Handler) DrainRecentAgentCount() int {
+	h.recentAgentsMu.Lock()
+	defer h.recentAgentsMu.Unlock()
+	cutoff := time.Now().Add(-recentAgentWindow)
+	for id, seen := range h.recentAgents {
+		if seen.Before(cutoff) {
+			delete(h.recentAgents, id)
+		}
+	}
+	return len(h.recentAgents)
 }
 
 func NewHandler(
@@ -155,6 +195,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // identity-override headers are never honored, so a valid Agent A token can
 // never be used to claim Agent B's identity.
 func (h *Handler) resolveIdentity(r *http.Request) (config.AgentIdentity, error) {
+	ident, err := h.resolveIdentityInner(r)
+	if err == nil {
+		h.noteAgentSeen(ident.AgentID)
+	}
+	return ident, err
+}
+
+func (h *Handler) resolveIdentityInner(r *http.Request) (config.AgentIdentity, error) {
 	if h.authMode == config.AgentAuthModeToken {
 		return h.resolveTokenIdentity(r)
 	}

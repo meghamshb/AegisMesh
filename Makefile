@@ -1,4 +1,4 @@
-.PHONY: up up-pilot down test smoke docker-check ui-build ui-dev test-integration register-agent
+.PHONY: up up-pilot up-fleet down down-fleet test smoke smoke-fleet docker-check ui-build ui-dev test-integration register-agent
 
 docker-check:
 	@docker info >/dev/null 2>&1 || { \
@@ -33,6 +33,18 @@ test-integration: ui-build docker-check
 
 smoke: docker-check
 	./scripts/smoke-phase0.sh
+
+# Phase 5.10: one control plane, two separate enforcement gateways. Brings the
+# fleet up itself (gateways cannot start before they have a credential), so do
+# not run `up-fleet` first.
+smoke-fleet: ui-build docker-check
+	./scripts/smoke-phase510-fleet.sh
+
+up-fleet: docker-check
+	docker compose -f docker-compose.fleet.yml up -d --build postgres control-plane
+
+down-fleet:
+	docker compose -f docker-compose.fleet.yml down -v
 
 register-agent:
 	./scripts/register-agent.sh $(OWNER_USER_ID) $(AGENT_NAME) $(CONTAINER_ID)

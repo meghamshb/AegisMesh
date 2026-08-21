@@ -22,7 +22,7 @@ func (p *Postgres) RegisterGateway(ctx context.Context, in RegisterGatewayInput)
 		INSERT INTO gateways (org_id, name, credential_hash, credential_prefix, metadata_json)
 		VALUES ($1, $2, $3, $4, $5::jsonb)
 		RETURNING id, org_id, name, status, credential_prefix, credential_hash, version,
-		          metadata_json, last_seen_at, created_at, revoked_at
+		          policy_version, active_agents, metadata_json, last_seen_at, created_at, revoked_at
 	`, in.OrgID, in.Name, in.CredentialHash, in.CredentialPrefix, string(metadataJSON))
 
 	gw, err := scanGatewayRow(row)
@@ -37,7 +37,7 @@ func (p *Postgres) ListGateways(ctx context.Context, orgID string) ([]domain.Gat
 	// tenant's fleet.
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, org_id, name, status, credential_prefix, credential_hash, version,
-		       metadata_json, last_seen_at, created_at, revoked_at
+		       policy_version, active_agents, metadata_json, last_seen_at, created_at, revoked_at
 		FROM gateways
 		WHERE org_id = $1
 		ORDER BY created_at ASC
@@ -64,7 +64,7 @@ func (p *Postgres) ListGateways(ctx context.Context, orgID string) ([]domain.Gat
 func (p *Postgres) GetGateway(ctx context.Context, orgID, id string) (domain.Gateway, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id, org_id, name, status, credential_prefix, credential_hash, version,
-		       metadata_json, last_seen_at, created_at, revoked_at
+		       policy_version, active_agents, metadata_json, last_seen_at, created_at, revoked_at
 		FROM gateways
 		WHERE id = $1 AND org_id = $2
 	`, id, orgID)
@@ -84,7 +84,7 @@ func (p *Postgres) GetGateway(ctx context.Context, orgID, id string) (domain.Gat
 func (p *Postgres) GetGatewayByCredentialHash(ctx context.Context, credentialHash string) (domain.Gateway, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id, org_id, name, status, credential_prefix, credential_hash, version,
-		       metadata_json, last_seen_at, created_at, revoked_at
+		       policy_version, active_agents, metadata_json, last_seen_at, created_at, revoked_at
 		FROM gateways
 		WHERE credential_hash = $1
 	`, credentialHash)
@@ -114,9 +114,11 @@ func (p *Postgres) UpdateGatewayHeartbeat(ctx context.Context, orgID, id string,
 		UPDATE gateways
 		SET last_seen_at = NOW(),
 		    version = CASE WHEN $2::boolean THEN $3 ELSE version END,
+		    policy_version = $7,
+		    active_agents = $8,
 		    metadata_json = CASE WHEN $4::boolean THEN $5::jsonb ELSE metadata_json END
 		WHERE id = $1 AND org_id = $6
-	`, id, in.Version != "", in.Version, hasMetadata, string(metadataJSON), orgID)
+	`, id, in.Version != "", in.Version, hasMetadata, string(metadataJSON), orgID, in.PolicyVersion, in.ActiveAgents)
 	if err != nil {
 		return domain.Gateway{}, fmt.Errorf("update gateway heartbeat: %w", err)
 	}
@@ -139,6 +141,8 @@ func scanGatewayRow(row pgxRow) (domain.Gateway, error) {
 		&gw.CredentialPrefix,
 		&gw.CredentialHash,
 		&version,
+		&gw.PolicyVersion,
+		&gw.ActiveAgents,
 		&metadataRaw,
 		&gw.LastSeenAt,
 		&gw.CreatedAt,

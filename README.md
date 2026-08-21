@@ -128,8 +128,16 @@ make ui-build      # embed React console into gateway
 make ui-dev        # Vite dev server → :8080
 make test          # go test ./...
 make smoke         # E2E proxy + lockdown checks (stack must be running)
+make smoke-fleet   # multi-gateway fleet demo (manages its own stack)
 make down-pilot    # tear down pilot stack
 ```
+
+### Multi-gateway fleet
+
+`make smoke-fleet` stands up a control plane plus two independent gateway
+containers, each with its own agent on its own isolated network, and proves that
+a single policy change made once centrally reaches both gateways — and is then
+withdrawn from both — without restarting either container.
 
 Environment variables: [`.env.example`](.env.example)
 
@@ -154,12 +162,17 @@ Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Does not
 
 Phases 0–4.1 complete (gateway, inbox, org rules, Hermes lockdown, pilot profile).
 
-Phases 5.2–5.9 complete: multi-user schema, agent credentials, authenticated
+Phases 5.2–5.10 complete: multi-user schema, agent credentials, authenticated
 proxy identity, scoped policy semantics, control-plane management APIs, admin
-UI, control/data-plane split, and gateway registration with versioned policy
-snapshots. A follow-up hardening pass org-scoped every tenant-owned query and
-added cross-org test suites — see "Tenant isolation (locked contract)" in
+UI, control/data-plane split, gateway registration with versioned policy
+snapshots, and a multi-gateway fleet in which one central policy change
+controls several independent enforcement gateways without restarting them.
+A hardening pass org-scoped every tenant-owned query and added cross-org test
+suites — see "Tenant isolation (locked contract)" and "Phase 5.10" in
 [docs/specs/hermes-policy-gateway.md](docs/specs/hermes-policy-gateway.md).
+
+Run `make smoke` for the single-node path and `make smoke-fleet` for the
+multi-gateway demo.
 
 Still open: SSO / per-caller admin auth, TLS, rate limits, CSV audit export.
 

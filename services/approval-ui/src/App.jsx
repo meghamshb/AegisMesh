@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { AuthModal } from './components/AuthModal.jsx'
 import { AgentsTab } from './components/AgentsTab.jsx'
 import { AuditTab } from './components/AuditTab.jsx'
+import { GatewaysTab } from './components/GatewaysTab.jsx'
 import { InboxTab } from './components/InboxTab.jsx'
 import { RulesTab } from './components/RulesTab.jsx'
 import { UsersTab } from './components/UsersTab.jsx'
@@ -11,6 +12,7 @@ const TABS = [
   { id: 'rules', label: 'Rules' },
   { id: 'users', label: 'Users' },
   { id: 'agents', label: 'Agents' },
+  { id: 'gateways', label: 'Gateways' },
   { id: 'audit', label: 'Audit' },
 ]
 
@@ -93,6 +95,14 @@ export default function App() {
         ) : null}
         {activeTab === 'agents' ? (
           <AgentsTab
+            active
+            onStatus={onStatus}
+            onAuthRequired={onAuthRequired}
+            refreshToken={refreshToken}
+          />
+        ) : null}
+        {activeTab === 'gateways' ? (
+          <GatewaysTab
             active
             onStatus={onStatus}
             onAuthRequired={onAuthRequired}

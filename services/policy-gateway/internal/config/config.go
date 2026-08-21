@@ -27,6 +27,7 @@ const (
 	defaultPolicyRefreshInterval = 5 * time.Second
 	defaultPolicyMaxStale        = 15 * time.Minute
 	defaultAgentIdentityCacheTTL = 10 * time.Second
+	defaultHeartbeatInterval     = 10 * time.Second
 )
 
 type AgentIdentity struct {
@@ -67,6 +68,7 @@ type Config struct {
 	PolicyRefreshInterval time.Duration
 	PolicyMaxStale        time.Duration
 	AgentIdentityCacheTTL time.Duration
+	HeartbeatInterval     time.Duration
 }
 
 const (
@@ -120,6 +122,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	heartbeatInterval, err := durationEnv("CLEARANCE_HEARTBEAT_INTERVAL", defaultHeartbeatInterval)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Mode:              envOrDefault("CLEARANCE_MODE", ModeAll),
@@ -150,6 +156,7 @@ func Load() (Config, error) {
 		PolicyRefreshInterval: policyRefreshInterval,
 		PolicyMaxStale:        policyMaxStale,
 		AgentIdentityCacheTTL: agentIdentityCacheTTL,
+		HeartbeatInterval:     heartbeatInterval,
 	}
 
 	if cfg.PostgresDSN == "" {

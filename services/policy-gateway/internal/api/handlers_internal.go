@@ -40,6 +40,30 @@ func (s *Server) authorizeGateway(w http.ResponseWriter, r *http.Request) (domai
 	return authed, true
 }
 
+// handleGatewaySelf lets a gateway learn its own identity from its credential
+// alone. Without it a gateway would have to be told its own UUID through
+// configuration, which means registering it before the container starts and
+// plumbing the id through the environment - awkward for a fleet that registers
+// itself at boot. The credential already names exactly one gateway, so this
+// just reads that back.
+func (s *Server) handleGatewaySelf(w http.ResponseWriter, r *http.Request) {
+	authed, ok := s.authorizeGateway(w, r)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	gw, err := s.egress.GetGateway(ctx, authed.OrgID, authed.GatewayID)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, gw)
+}
+
 func (s *Server) handleGatewayHeartbeat(w http.ResponseWriter, r *http.Request) {
 	authed, ok := s.authorizeGateway(w, r)
 	if !ok {
@@ -64,7 +88,11 @@ func (s *Server) handleGatewayHeartbeat(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	gw, err := s.identity.Heartbeat(ctx, authed.OrgID, id, store.GatewayHeartbeatInput{Version: body.Version})
+	gw, err := s.identity.Heartbeat(ctx, authed.OrgID, id, store.GatewayHeartbeatInput{
+		Version:       body.Version,
+		PolicyVersion: body.PolicyVersion,
+		ActiveAgents:  body.ActiveAgents,
+	})
 	if err != nil {
 		s.logger.Error("gateway heartbeat", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to record heartbeat")

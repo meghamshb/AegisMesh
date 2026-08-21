@@ -14,6 +14,8 @@ type Gateway struct {
 	CredentialPrefix string         `json:"credential_prefix"`
 	CredentialHash   string         `json:"-"`
 	Version          string         `json:"version,omitempty"`
+	PolicyVersion    int64          `json:"policy_version"`
+	ActiveAgents     int            `json:"active_agents"`
 	MetadataJSON     []byte         `json:"-"`
 	Metadata         map[string]any `json:"metadata"`
 	LastSeenAt       *time.Time     `json:"last_seen_at,omitempty"`

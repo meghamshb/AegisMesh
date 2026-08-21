@@ -25,8 +25,22 @@ type App struct {
 	api    *api.Server
 }
 
+// New builds the single-process App: policy decisions come from a direct SQL
+// query, exactly as before Phase 5.10. This is CLEARANCE_MODE=all.
 func New(cfg config.Config, logger *slog.Logger, st store.Store) *App {
-	engine := policy.NewRuleEngine(st)
+	return newApp(cfg, logger, st, policy.NewRuleEngine(st))
+}
+
+// NewDistributed builds a fleet gateway (Phase 5.10): policy decisions come
+// from the centrally managed snapshot in `snapshots`, so a rule created once
+// in the control plane reaches every gateway on its next refresh without a
+// restart. Request-history state (standing denies, approve-once grants) and
+// egress/audit persistence still go through st.
+func NewDistributed(cfg config.Config, logger *slog.Logger, st store.Store, snapshots policy.SnapshotProvider) *App {
+	return newApp(cfg, logger, st, policy.NewSnapshotRuleEngine(snapshots, st))
+}
+
+func newApp(cfg config.Config, logger *slog.Logger, st store.Store, engine policy.Engine) *App {
 	egress := service.NewEgress(st, engine)
 	identitySvc := identity.NewService(st)
 	return &App{
@@ -36,6 +50,10 @@ func New(cfg config.Config, logger *slog.Logger, st store.Store) *App {
 		api:    api.New(cfg, logger, st, egress, identitySvc),
 	}
 }
+
+// AgentCounter exposes the data-plane handler's recently-seen-agent counter so
+// the fleet heartbeat can report it. Implements fleet.AgentCounter.
+func (a *App) AgentCounter() *proxy.Handler { return a.proxy }
 
 // Handler serves both the control-plane API and the data-plane proxy on one
 // listener, dispatching by request shape. This is CLEARANCE_MODE=all - the

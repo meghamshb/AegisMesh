@@ -36,16 +36,35 @@ type Engine interface {
 	Evaluate(ctx context.Context, req Request) (Evaluation, error)
 }
 
+// RuleEngine decides a request against the persistent rule set plus
+// request-history state.
+//
+// rules and store are separate on purpose. The rule set may come from a local
+// snapshot (distributed gateway) or from SQL (single process), but standing
+// denies and approve-once grants are always read from the store, because they
+// are mutable per-request state rather than policy.
 type RuleEngine struct {
+	rules RuleSource
 	store store.Store
 }
 
+// NewRuleEngine builds an engine that resolves rules with a direct SQL query -
+// the pre-5.10 behavior, still used by CLEARANCE_MODE=all.
 func NewRuleEngine(st store.Store) *RuleEngine {
-	return &RuleEngine{store: st}
+	return &RuleEngine{rules: storeRuleSource{store: st}, store: st}
+}
+
+// NewSnapshotRuleEngine builds an engine that decides policy from a locally
+// cached, centrally managed policy snapshot (Phase 5.10). Request-history
+// lookups still go to st. If the snapshot is missing or stale beyond its
+// ceiling, Evaluate fails closed with ErrPolicyUnavailable rather than
+// deciding against an unknown rule set.
+func NewSnapshotRuleEngine(snapshots SnapshotProvider, st store.Store) *RuleEngine {
+	return &RuleEngine{rules: snapshotRuleSource{snapshots: snapshots}, store: st}
 }
 
 func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, error) {
-	rules, err := e.store.MatchRules(ctx, store.MatchRulesInput{
+	rules, err := e.rules.MatchRules(ctx, store.MatchRulesInput{
 		OrgID:   req.OrgID,
 		UserID:  req.UserID,
 		AgentID: req.AgentID,

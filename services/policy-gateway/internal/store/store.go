@@ -181,8 +181,10 @@ type RegisterGatewayInput struct {
 }
 
 type GatewayHeartbeatInput struct {
-	Version  string
-	Metadata map[string]any
+	Version       string
+	PolicyVersion int64
+	ActiveAgents  int
+	Metadata      map[string]any
 }
 
 type Store interface {
