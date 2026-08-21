@@ -37,6 +37,9 @@ func New(cfg config.Config, logger *slog.Logger, st store.Store) *App {
 	}
 }
 
+// Handler serves both the control-plane API and the data-plane proxy on one
+// listener, dispatching by request shape. This is CLEARANCE_MODE=all - the
+// existing single-process monolith, unchanged from before Phase 5.8.
 func (a *App) Handler() http.Handler {
 	return a.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if proxy.IsProxyRequest(r) {
@@ -44,6 +47,23 @@ func (a *App) Handler() http.Handler {
 			return
 		}
 		a.api.Handler().ServeHTTP(w, r)
+	}))
+}
+
+// ControlHandler serves only the control plane: users/agents/rules/requests/
+// audit management plus the embedded admin UI. No proxy/CONNECT forwarding
+// lives behind this handler at all (CLEARANCE_MODE=control).
+func (a *App) ControlHandler() http.Handler {
+	return a.withMiddleware(a.api.Handler())
+}
+
+// ProxyHandler serves only the data-plane egress proxy. No control-plane
+// route (users/agents/rules/requests/audit/UI) is reachable through this
+// handler (CLEARANCE_MODE=gateway) - satisfies "admin APIs are not exposed
+// on the gateway proxy listener" without needing a second admin-token check.
+func (a *App) ProxyHandler() http.Handler {
+	return a.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.proxy.ServeHTTP(w, r)
 	}))
 }
 

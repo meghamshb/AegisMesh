@@ -21,6 +21,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Fatalf("ListenAddr = %q, want :8080", cfg.ListenAddr)
 	}
+	if cfg.Mode != config.ModeAll {
+		t.Fatalf("Mode = %q, want %q (preserves pre-5.8 single-process behavior)", cfg.Mode, config.ModeAll)
+	}
+	if cfg.GatewayListenAddr != ":8081" {
+		t.Fatalf("GatewayListenAddr = %q, want :8081", cfg.GatewayListenAddr)
+	}
 	if cfg.PostgresDSN != "postgres://example" {
 		t.Fatalf("PostgresDSN = %q", cfg.PostgresDSN)
 	}
@@ -78,5 +84,40 @@ func TestLoadRejectsInvalidDuration(t *testing.T) {
 
 	if _, err := config.Load(); err == nil {
 		t.Fatal("expected invalid duration error")
+	}
+}
+
+func TestLoadModeControlAndGateway(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://example")
+
+	t.Setenv("CLEARANCE_MODE", "control")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Mode != config.ModeControl {
+		t.Fatalf("Mode = %q, want control", cfg.Mode)
+	}
+
+	t.Setenv("CLEARANCE_MODE", "gateway")
+	t.Setenv("GATEWAY_PROXY_LISTEN_ADDR", ":9091")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Mode != config.ModeGateway {
+		t.Fatalf("Mode = %q, want gateway", cfg.Mode)
+	}
+	if cfg.GatewayListenAddr != ":9091" {
+		t.Fatalf("GatewayListenAddr = %q, want :9091", cfg.GatewayListenAddr)
+	}
+}
+
+func TestLoadRejectsInvalidMode(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://example")
+	t.Setenv("CLEARANCE_MODE", "bogus")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("expected invalid CLEARANCE_MODE error")
 	}
 }

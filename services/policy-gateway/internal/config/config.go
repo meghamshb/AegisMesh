@@ -9,14 +9,15 @@ import (
 )
 
 const (
-	defaultListenAddr    = ":8080"
-	defaultServiceName   = "policy-gateway"
-	defaultServiceVer    = "0.6.1-phase4"
-	defaultPostgresDSN   = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
-	defaultReadTimeout   = 15 * time.Second
-	defaultWriteTimeout  = 15 * time.Second
-	defaultIdleTimeout   = 60 * time.Second
-	defaultShutdownGrace = 10 * time.Second
+	defaultListenAddr        = ":8080"
+	defaultGatewayListenAddr = ":8081"
+	defaultServiceName       = "policy-gateway"
+	defaultServiceVer        = "0.6.1-phase4"
+	defaultPostgresDSN       = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
+	defaultReadTimeout       = 15 * time.Second
+	defaultWriteTimeout      = 15 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
+	defaultShutdownGrace     = 10 * time.Second
 
 	defaultOrgID   = "11111111-1111-1111-1111-111111111010"
 	defaultUserID  = "11111111-1111-1111-1111-111111111001"
@@ -31,7 +32,9 @@ type AgentIdentity struct {
 }
 
 type Config struct {
+	Mode                  string
 	ListenAddr            string
+	GatewayListenAddr     string
 	ServiceName           string
 	ServiceVersion        string
 	PostgresDSN           string
@@ -53,6 +56,19 @@ type Config struct {
 const (
 	AgentAuthModeStatic = "static"
 	AgentAuthModeToken  = "token"
+)
+
+// CLEARANCE_MODE decides which HTTP surfaces this process binds (Phase 5.8):
+//   - all: both the control-plane API and the data-plane proxy on ListenAddr
+//     (the existing single-process monolith behavior, unchanged default).
+//   - control: only the control-plane API (users/agents/rules/requests/audit,
+//     plus the embedded UI) on ListenAddr. No proxy forwarding.
+//   - gateway: only the data-plane proxy listener on GatewayListenAddr. No
+//     admin API is exposed on this listener at all.
+const (
+	ModeAll     = "all"
+	ModeControl = "control"
+	ModeGateway = "gateway"
 )
 
 func Load() (Config, error) {
@@ -78,15 +94,17 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:     envOrDefault("GATEWAY_LISTEN_ADDR", defaultListenAddr),
-		ServiceName:    envOrDefault("GATEWAY_SERVICE_NAME", defaultServiceName),
-		ServiceVersion: envOrDefault("GATEWAY_SERVICE_VERSION", defaultServiceVer),
-		PostgresDSN:    envOrDefault("POSTGRES_DSN", defaultPostgresDSN),
-		ReadTimeout:    readTimeout,
-		WriteTimeout:   writeTimeout,
-		IdleTimeout:    idleTimeout,
-		ShutdownGrace:  shutdownGrace,
-		ProxyEnabled:   proxyEnabled,
+		Mode:              envOrDefault("CLEARANCE_MODE", ModeAll),
+		ListenAddr:        envOrDefault("GATEWAY_LISTEN_ADDR", defaultListenAddr),
+		GatewayListenAddr: envOrDefault("GATEWAY_PROXY_LISTEN_ADDR", defaultGatewayListenAddr),
+		ServiceName:       envOrDefault("GATEWAY_SERVICE_NAME", defaultServiceName),
+		ServiceVersion:    envOrDefault("GATEWAY_SERVICE_VERSION", defaultServiceVer),
+		PostgresDSN:       envOrDefault("POSTGRES_DSN", defaultPostgresDSN),
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		ShutdownGrace:     shutdownGrace,
+		ProxyEnabled:      proxyEnabled,
 		Identity: AgentIdentity{
 			OrgID:   envOrDefault("GATEWAY_ORG_ID", defaultOrgID),
 			UserID:  envOrDefault("GATEWAY_USER_ID", defaultUserID),
@@ -109,6 +127,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AgentAuthMode != AgentAuthModeStatic && cfg.AgentAuthMode != AgentAuthModeToken {
 		return Config{}, fmt.Errorf("GATEWAY_AGENT_AUTH_MODE must be %q or %q", AgentAuthModeStatic, AgentAuthModeToken)
+	}
+	if cfg.Mode != ModeAll && cfg.Mode != ModeControl && cfg.Mode != ModeGateway {
+		return Config{}, fmt.Errorf("CLEARANCE_MODE must be %q, %q, or %q", ModeAll, ModeControl, ModeGateway)
 	}
 
 	return cfg, nil
