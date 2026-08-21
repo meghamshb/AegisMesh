@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -113,12 +114,19 @@ func main() {
 
 	addr, handler := selectListener(cfg, application)
 	httpServer := &http.Server{
-		Addr:         addr,
-		Handler:      handler,
+		Addr:    addr,
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			// TLS 1.2 floor: 1.0 and 1.1 are deprecated and offer nothing this
+			// deployment needs.
+			MinVersion: tls.VersionTLS12,
+		},
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
 	}
+
+	tlsEnabled := cfg.TLSCertFile != "" && cfg.TLSKeyFile != ""
 
 	go func() {
 		logger.Info("policy gateway listening",
@@ -126,9 +134,29 @@ func main() {
 			"addr", addr,
 			"version", cfg.ServiceVersion,
 			"proxy_enabled", cfg.ProxyEnabled,
+			"tls", tlsEnabled,
 		)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("http server stopped", "error", err)
+
+		var serveErr error
+		if tlsEnabled {
+			serveErr = httpServer.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			// Plaintext is correct for the data-plane proxy listener, which
+			// speaks HTTP proxy semantics to agents on a private network, and
+			// for local development. It is not appropriate for a control plane
+			// reachable over an untrusted network: admin tokens, OIDC bearer
+			// tokens, and freshly minted agent credentials all cross it.
+			if cfg.Mode != config.ModeGateway {
+				logger.Warn("control plane is serving plaintext HTTP",
+					"impact", "admin and OIDC tokens, and newly issued agent credentials, are exposed in transit",
+					"fix", "set CLEARANCE_TLS_CERT_FILE and CLEARANCE_TLS_KEY_FILE, or terminate TLS at a trusted proxy",
+				)
+			}
+			serveErr = httpServer.ListenAndServe()
+		}
+
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			logger.Error("http server stopped", "error", serveErr)
 			stop()
 		}
 	}()

@@ -121,3 +121,56 @@ func TestLoadRejectsInvalidMode(t *testing.T) {
 		t.Fatal("expected invalid CLEARANCE_MODE error")
 	}
 }
+
+// A half-configured TLS keypair must be rejected rather than silently falling
+// back to plaintext - the failure mode being guarded against is a deployment
+// that believes it is encrypted and is not.
+func TestTLSKeypairMustBeCompleteOrAbsent(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://x/y")
+
+	t.Setenv("CLEARANCE_TLS_CERT_FILE", "/tmp/cert.pem")
+	t.Setenv("CLEARANCE_TLS_KEY_FILE", "")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("a cert without a key was accepted")
+	}
+
+	t.Setenv("CLEARANCE_TLS_CERT_FILE", "")
+	t.Setenv("CLEARANCE_TLS_KEY_FILE", "/tmp/key.pem")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("a key without a cert was accepted")
+	}
+
+	// Neither is the normal local case and must remain valid.
+	t.Setenv("CLEARANCE_TLS_CERT_FILE", "")
+	t.Setenv("CLEARANCE_TLS_KEY_FILE", "")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("omitting TLS entirely should be valid: %v", err)
+	}
+}
+
+func TestAuthModeValidation(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://x/y")
+
+	t.Setenv("CLEARANCE_AUTH_MODE", "oidc")
+	t.Setenv("OIDC_ISSUER_URL", "")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("oidc mode without an issuer was accepted")
+	}
+
+	t.Setenv("OIDC_ISSUER_URL", "https://idp.example")
+	t.Setenv("OIDC_CLIENT_ID", "")
+	t.Setenv("OIDC_AUDIENCE", "")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("oidc mode without a client id or audience was accepted")
+	}
+
+	t.Setenv("OIDC_CLIENT_ID", "clearance")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("valid oidc config rejected: %v", err)
+	}
+
+	t.Setenv("CLEARANCE_AUTH_MODE", "disabled")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("an unrecognised auth mode was accepted")
+	}
+}

@@ -335,6 +335,21 @@ print("allowed" if bad else "blocked")')"
 record_case "SSRF-14" "Hard-denied targets never enter the approval queue" "blocked" "$queued" \
   "nobody can approve their way to the metadata service"
 
+# An unresolvable host is refused outright rather than forwarded: the guard
+# cannot prove it is not internal, and it would fail to connect anyway.
+record_case "SSRF-15" "Unresolvable hostname" "blocked" \
+  "$(curl_through_proxy "http://this-name-does-not-resolve.invalid/")" \
+  "cannot be proven external, so it is refused"
+
+# The rebinding defence is asserted deterministically rather than live:
+# reproducing it needs authoritative control of a DNS zone with a low TTL,
+# which a self-contained harness cannot have without becoming a DNS server.
+rebinding_unit="$(cd services/policy-gateway && go test ./internal/proxy/ -count=1 \
+  -run 'TestDialRefusesRebindToInternalAddress|TestDialRefusesWhenAnyResolvedAddressIsInternal|TestDialResolvesOnlyOnce' \
+  >/dev/null 2>&1 && echo blocked || echo allowed)"
+record_case "SSRF-16" "DNS rebinding between check and dial" "blocked" "$rebinding_unit" \
+  "verified by internal/proxy/rebinding_test.go, not a live probe"
+
 # ---------------------------------------------------------------------------
 echo
 echo "▸ D. Redirects — covered by deterministic tests, not a live probe"

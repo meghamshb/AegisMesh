@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -113,10 +112,11 @@ func NewHandler(
 		logger:                logger,
 		transport: &http.Transport{
 			Proxy: nil,
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
+			// Dial through the guard so the address that gets connected to is
+			// the same one that was validated. A plain dialer would resolve
+			// again here, reopening the DNS-rebinding window that IsBlocked
+			// cannot close on its own.
+			DialContext:           guard.DialContext,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
@@ -337,6 +337,19 @@ func (h *Handler) forwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq.Header.Del("Proxy-Connection")
 	resp, err := h.transport.RoundTrip(outReq)
 	if err != nil {
+		var blocked ErrBlockedUpstream
+		if errors.As(err, &blocked) {
+			// The name passed the pre-flight check but resolved to an internal
+			// address at dial time. Report it as the hard denial it is, so it
+			// is not mistaken for an upstream being down.
+			h.logger.Warn("blocked upstream at dial time",
+				"host", blocked.Host, "reason", blocked.Reason)
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error":  "egress to internal destination blocked",
+				"detail": blocked.Reason,
+			})
+			return
+		}
 		h.logger.Error("forward http request", "error", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream request failed"})
 		return
@@ -357,8 +370,24 @@ func (h *Handler) forwardCONNECT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstream, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+	// CONNECT gets the same treatment. It is the easier target of the two:
+	// once the tunnel is open Clearance sees only bytes, so a rebound address
+	// here would never be noticed again.
+	dialCtx, cancelDial := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancelDial()
+
+	upstream, err := h.guard.DialContext(dialCtx, "tcp", r.Host)
 	if err != nil {
+		var blocked ErrBlockedUpstream
+		if errors.As(err, &blocked) {
+			h.logger.Warn("blocked CONNECT upstream at dial time",
+				"host", blocked.Host, "reason", blocked.Reason)
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error":  "egress to internal destination blocked",
+				"detail": blocked.Reason,
+			})
+			return
+		}
 		h.logger.Error("connect upstream", "error", err, "host", r.Host)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream connect failed"})
 		return

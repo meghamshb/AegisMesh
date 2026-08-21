@@ -866,7 +866,9 @@ Purpose: make `/ui` credible for corp reviewers — utilitarian wireframe aesthe
       and proxied traffic deliberately unlimited
 - [x] TLS verified by default on every outbound client (Phase 5.11); no
       `InsecureSkipVerify` anywhere
-- [ ] TLS *termination* for the control plane's own listener, and timeouts
+- [x] TLS termination for the listener — `CLEARANCE_TLS_CERT_FILE` /
+      `CLEARANCE_TLS_KEY_FILE`, TLS 1.2 floor. Half a keypair is rejected at
+      startup, and a plaintext control plane warns
 - [ ] Audit export CSV
 - [x] Pagination on every list endpoint (Phase 5.6) — default 50, max 200
 - [x] Multi-tenant orgs (Phases 5.2–5.9 + tenant-isolation hardening) — real
@@ -1508,6 +1510,59 @@ it must know how to authenticate before it holds a credential - and adapts:
 - **dev-token**: a persistent `DEV-TOKEN MODE` badge in the toolbar plus a
   warning in the modal. The badge is deliberately always visible; the failure
   being guarded against is nobody realising which mode a deployment is in.
+
+---
+
+## Post-5.13 fixes: DNS rebinding and TLS termination
+
+Two items that had been carried as known gaps rather than bugs. Both are now
+closed.
+
+### DNS rebinding was a real hole
+
+The SSRF guard resolved a hostname to decide whether to allow a request, and
+the HTTP transport then resolved that name **again** when it dialled. Two
+separate lookups means a name whose DNS answer changes in between — public on
+the first, `169.254.169.254` on the second — passed the check and was fetched
+anyway. `forwardCONNECT` had the same shape, and was the softer target: once a
+tunnel is open Clearance sees only bytes, so a rebound address would never be
+noticed again.
+
+The fix collapses the two lookups into one. `UpstreamGuard` now owns dialing:
+
+1. Apply every check that needs no DNS (blocked names, `.local`/`.internal`,
+   IP literals).
+2. Resolve **once**.
+3. Refuse if *any* returned address is internal — a hostile resolver can
+   return a mix, and picking the acceptable answer out of a set that also
+   contains `127.0.0.1` is exactly the behaviour an attacker is counting on.
+4. Connect to an address that was validated, never to the name.
+
+Both the HTTP transport (`DialContext`) and CONNECT now go through it, and a
+dial-time refusal surfaces as a hard 403 rather than a bad gateway, so it is
+not mistaken for an upstream being down.
+
+`internal/proxy/rebinding_test.go` drives a resolver whose answer deliberately
+flips between calls, and asserts the dial is refused, that a mixed answer is
+refused wholesale, and that exactly one lookup happens — because a second
+lookup is precisely what reopens the window.
+
+The evaluation report keeps an entry for this rather than deleting it, since
+it is the kind of gap that returns the moment someone swaps the dialer back to
+a plain one.
+
+### TLS termination
+
+`CLEARANCE_TLS_CERT_FILE` and `CLEARANCE_TLS_KEY_FILE` enable TLS on the
+listener, with a TLS 1.2 floor. Two deliberate behaviours:
+
+- Setting one without the other is rejected at startup. Silently falling back
+  to plaintext is worse than refusing, because the deployment believes it is
+  encrypted.
+- A **control plane** serving plaintext logs a warning naming what crosses it:
+  admin tokens, OIDC bearer tokens, and freshly minted agent credentials. The
+  gateway proxy listener does not warn — it speaks HTTP proxy semantics to
+  agents on a private network, where plaintext is the correct choice.
 
 ---
 

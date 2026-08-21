@@ -6,16 +6,16 @@
   Every number below is computed from measured test results.
 -->
 
-- **Generated:** 2026-08-21 19:41 UTC
-- **Commit:** `f8a02ab`
+- **Generated:** 2026-08-21 19:54 UTC
+- **Commit:** `54f0c49`
 - **Gateway version:** `dev`
 - **Harness:** `scripts/security/run-evaluation.sh`
 
 ## Measured result
 
-> **39/39 evaluated egress bypass cases were blocked or mediated in the tested Docker Compose configuration.**
+> **41/41 evaluated egress bypass cases were blocked or mediated in the tested Docker Compose configuration.**
 
-Across 42 total cases (39 bypass attempts plus 3 positive controls), 42 matched their expected outcome and 0 did not.
+Across 44 total cases (41 bypass attempts plus 3 positive controls), 44 matched their expected outcome and 0 did not.
 
 ### What this does *not* claim
 
@@ -83,6 +83,8 @@ The evaluation runs against `docker-compose.fleet.yml`, not the default single-n
 | SSRF-12 | Proxy to peer gateway | `blocked` | `blocked` | PASS |  |
 | SSRF-13 | DNS name resolving to private IP | `blocked` | `blocked` | PASS | localtest.me resolves to 127.0.0.1 |
 | SSRF-14 | Hard-denied targets never enter the approval queue | `blocked` | `blocked` | PASS | nobody can approve their way to the metadata service |
+| SSRF-15 | Unresolvable hostname | `blocked` | `blocked` | PASS | cannot be proven external, so it is refused |
+| SSRF-16 | DNS rebinding between check and dial | `blocked` | `blocked` | PASS | verified by internal/proxy/rebinding_test.go, not a live probe |
 
 ### Agent identity and credentials
 
@@ -119,7 +121,7 @@ The evaluation runs against `docker-compose.fleet.yml`, not the default single-n
 
 Stated explicitly so the table above is not mistaken for full coverage.
 
-- **DNS rebinding.** The SSRF guard resolves a hostname to check it, then the transport resolves again when dialling. A name that returns a public address on the first lookup and a private one on the second would pass the check. Closing this needs the guard to pin the resolved address and dial that address directly.
+- **DNS rebinding is closed, not open.** It was a real gap: the guard resolved a name to check it and the transport resolved again to dial it, so an answer that changed in between was fetched anyway. The guard now owns dialing - it resolves once, refuses if *any* returned address is internal, and connects to an address it validated rather than to the name. Covered by `internal/proxy/rebinding_test.go`, which drives a resolver whose answer deliberately flips between calls. Listed here rather than deleted because it is the kind of gap that reappears the moment someone swaps the transport's dialer back to a plain one.
 - **CONNECT tunnels are host-level only.** Once a tunnel is established, Clearance sees bytes, not requests: it cannot evaluate paths, inspect redirects, or notice that a permitted host is being used as a relay. This is why remembering a CONNECT rule is refused outright.
 - **A permitted host is trusted for everything it serves.** Allowing `example.com` allows whatever that host returns, including content that instructs the agent to do something else.
 - **The evaluation covers Docker Compose only.** Bare-metal or Kubernetes deployments have different network lockdown properties, and the EGR-07 through EGR-10 results do not transfer to them.

@@ -82,6 +82,8 @@ type Config struct {
 	PolicyMaxStale        time.Duration
 	AgentIdentityCacheTTL time.Duration
 	HeartbeatInterval     time.Duration
+	TLSCertFile           string
+	TLSKeyFile            string
 	AuthMode              string
 	OIDCIssuerURL         string
 	OIDCClientID          string
@@ -189,6 +191,8 @@ func Load() (Config, error) {
 		PolicyMaxStale:        policyMaxStale,
 		AgentIdentityCacheTTL: agentIdentityCacheTTL,
 		HeartbeatInterval:     heartbeatInterval,
+		TLSCertFile:           strings.TrimSpace(os.Getenv("CLEARANCE_TLS_CERT_FILE")),
+		TLSKeyFile:            strings.TrimSpace(os.Getenv("CLEARANCE_TLS_KEY_FILE")),
 		AuthMode:              envOrDefault("CLEARANCE_AUTH_MODE", AuthModeDevToken),
 		OIDCIssuerURL:         strings.TrimSpace(os.Getenv("OIDC_ISSUER_URL")),
 		OIDCClientID:          strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID")),
@@ -201,6 +205,12 @@ func Load() (Config, error) {
 	if cfg.PostgresDSN == "" {
 		return Config{}, fmt.Errorf("POSTGRES_DSN must not be empty")
 	}
+	// Both halves of a TLS keypair or neither; one without the other is a
+	// deployment mistake that would otherwise silently fall back to plaintext.
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+		return Config{}, fmt.Errorf("CLEARANCE_TLS_CERT_FILE and CLEARANCE_TLS_KEY_FILE must be set together")
+	}
+
 	switch cfg.AuthMode {
 	case AuthModeDevToken:
 		// Nothing further required; the dev token may still be empty, which

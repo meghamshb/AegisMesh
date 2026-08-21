@@ -186,11 +186,15 @@ def main():
     w("")
     w("Stated explicitly so the table above is not mistaken for full coverage.")
     w("")
-    w("- **DNS rebinding.** The SSRF guard resolves a hostname to check it, then "
-      "the transport resolves again when dialling. A name that returns a public "
-      "address on the first lookup and a private one on the second would pass "
-      "the check. Closing this needs the guard to pin the resolved address and "
-      "dial that address directly.")
+    w("- **DNS rebinding is closed, not open.** It was a real gap: the guard "
+      "resolved a name to check it and the transport resolved again to dial "
+      "it, so an answer that changed in between was fetched anyway. The guard "
+      "now owns dialing - it resolves once, refuses if *any* returned address "
+      "is internal, and connects to an address it validated rather than to the "
+      "name. Covered by `internal/proxy/rebinding_test.go`, which drives a "
+      "resolver whose answer deliberately flips between calls. Listed here "
+      "rather than deleted because it is the kind of gap that reappears the "
+      "moment someone swaps the transport's dialer back to a plain one.")
     w("- **CONNECT tunnels are host-level only.** Once a tunnel is established, "
       "Clearance sees bytes, not requests: it cannot evaluate paths, inspect "
       "redirects, or notice that a permitted host is being used as a relay. This "
