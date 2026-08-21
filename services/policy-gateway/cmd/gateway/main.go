@@ -12,6 +12,7 @@ import (
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/app"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policycache"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
@@ -39,6 +40,27 @@ func main() {
 	if err := app.WaitForStore(waitCtx, st, logger); err != nil {
 		logger.Error("postgres not ready", "error", err)
 		os.Exit(1)
+	}
+
+	// Fleet mode (Phase 5.9): a gateway process configured with a control
+	// plane URL must fail closed at cold start if it cannot load an initial
+	// policy snapshot - it must never begin proxying traffic against unknown
+	// policy. This does not yet gate live request evaluation (rule
+	// evaluation still reads Postgres directly in this phase; see
+	// internal/policycache's doc comment), but proves out registration,
+	// versioned snapshot fetch, fail-closed startup, and background refresh
+	// for real, ahead of Phase 5.10's fleet wiring.
+	if cfg.Mode == config.ModeGateway && cfg.ControlPlaneURL != "" {
+		cache := policycache.New(
+			policycache.NewHTTPFetcher(cfg.ControlPlaneURL, cfg.GatewayToken),
+			cfg.PolicyMaxStale,
+			logger,
+		)
+		if err := cache.Start(ctx, cfg.PolicyRefreshInterval); err != nil {
+			logger.Error("policy snapshot unavailable at startup, failing closed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("policy snapshot loaded", "health", cache.Health())
 	}
 
 	application := app.New(cfg, logger, st)

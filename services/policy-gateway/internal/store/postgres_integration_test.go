@@ -711,3 +711,151 @@ func TestListAuditEventsFilters(t *testing.T) {
 		t.Fatalf("expected 0 events for unknown event_type, got %d", len(unrelated))
 	}
 }
+
+func TestRegisterGatewayAndAuthenticate(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	gw, err := pg.RegisterGateway(ctx, store.RegisterGatewayInput{
+		OrgID:            seededOrgID,
+		Name:             "integration-test-gateway-" + time.Now().Format("150405.000000000"),
+		CredentialPrefix: "clr_gateway_test",
+		CredentialHash:   identity.HashToken("integration-test-gateway-token"),
+		Metadata:         map[string]any{"hostname": "dev-macbook"},
+	})
+	if err != nil {
+		t.Fatalf("RegisterGateway: %v", err)
+	}
+	if gw.OrgID != seededOrgID || gw.Status != "active" {
+		t.Fatalf("unexpected gateway: %+v", gw)
+	}
+	if gw.Metadata["hostname"] != "dev-macbook" {
+		t.Fatalf("metadata = %+v, want hostname=dev-macbook", gw.Metadata)
+	}
+
+	byHash, err := pg.GetGatewayByCredentialHash(ctx, identity.HashToken("integration-test-gateway-token"))
+	if err != nil {
+		t.Fatalf("GetGatewayByCredentialHash: %v", err)
+	}
+	if byHash.ID != gw.ID {
+		t.Fatalf("GetGatewayByCredentialHash returned %s, want %s", byHash.ID, gw.ID)
+	}
+
+	updated, err := pg.UpdateGatewayHeartbeat(ctx, gw.ID, store.GatewayHeartbeatInput{Version: "0.1.0"})
+	if err != nil {
+		t.Fatalf("UpdateGatewayHeartbeat: %v", err)
+	}
+	if updated.Version != "0.1.0" {
+		t.Fatalf("version = %q, want 0.1.0", updated.Version)
+	}
+	if updated.LastSeenAt == nil {
+		t.Fatal("expected last_seen_at to be set after heartbeat")
+	}
+
+	gateways, err := pg.ListGateways(ctx, seededOrgID)
+	if err != nil {
+		t.Fatalf("ListGateways: %v", err)
+	}
+	found := false
+	for _, g := range gateways {
+		if g.ID == gw.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected registered gateway to appear in ListGateways for its org")
+	}
+}
+
+func TestGetGatewayByCredentialHashNotFound(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.GetGatewayByCredentialHash(ctx, "not-a-real-hash")
+	var notFound domain.ErrNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestOrgPolicyVersionIncrementsOnMutation(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	before, err := pg.GetOrgPolicyVersion(ctx, seededOrgID)
+	if err != nil {
+		t.Fatalf("GetOrgPolicyVersion (before): %v", err)
+	}
+
+	rule, err := pg.CreatePolicyRule(ctx, store.CreatePolicyRuleInput{
+		OrgID:      seededOrgID,
+		Scope:      domain.RuleScopeOrg,
+		ScopeRefID: seededOrgID,
+		Effect:     domain.RuleEffectAllow,
+		Host:       "policy-version-test.example",
+		Port:       443,
+		Method:     "GET",
+		PathPrefix: "/",
+		CreatedBy:  seededAdminID,
+	}, store.AuditInput{EventType: "policy_rule_created", ActorID: seededAdminID, Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreatePolicyRule: %v", err)
+	}
+
+	afterCreate, err := pg.GetOrgPolicyVersion(ctx, seededOrgID)
+	if err != nil {
+		t.Fatalf("GetOrgPolicyVersion (after create): %v", err)
+	}
+	if afterCreate <= before {
+		t.Fatalf("version did not increment on rule creation: before=%d after=%d", before, afterCreate)
+	}
+
+	if err := pg.DeletePolicyRule(ctx, rule.ID, store.AuditInput{
+		EventType: "policy_rule_revoked", ActorID: seededAdminID, Metadata: map[string]any{"rule_id": rule.ID},
+	}); err != nil {
+		t.Fatalf("DeletePolicyRule: %v", err)
+	}
+
+	afterDelete, err := pg.GetOrgPolicyVersion(ctx, seededOrgID)
+	if err != nil {
+		t.Fatalf("GetOrgPolicyVersion (after delete): %v", err)
+	}
+	if afterDelete <= afterCreate {
+		t.Fatalf("version did not increment on rule revoke: afterCreate=%d afterDelete=%d", afterCreate, afterDelete)
+	}
+}
+
+func TestListRulesForOrgSnapshotExcludesExpired(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	past := time.Now().Add(-time.Minute)
+	_, err := pg.CreatePolicyRule(ctx, store.CreatePolicyRuleInput{
+		OrgID:      seededOrgID,
+		Scope:      domain.RuleScopeOrg,
+		ScopeRefID: seededOrgID,
+		Effect:     domain.RuleEffectAllow,
+		Host:       "snapshot-expired-test.example",
+		Port:       443,
+		Method:     "GET",
+		PathPrefix: "/",
+		ExpiresAt:  &past,
+		CreatedBy:  seededAdminID,
+	}, store.AuditInput{EventType: "policy_rule_created", ActorID: seededAdminID, Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreatePolicyRule: %v", err)
+	}
+
+	snapshot, err := pg.ListRulesForOrgSnapshot(ctx, seededOrgID)
+	if err != nil {
+		t.Fatalf("ListRulesForOrgSnapshot: %v", err)
+	}
+	for _, r := range snapshot {
+		if r.Host == "snapshot-expired-test.example" {
+			t.Fatal("expired rule must not appear in the policy snapshot")
+		}
+		if r.OrgID != seededOrgID {
+			t.Fatalf("snapshot returned a rule from another org: %+v", r)
+		}
+	}
+}

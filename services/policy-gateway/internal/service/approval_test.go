@@ -122,6 +122,25 @@ func (s *approvalStore) UpdateAgent(context.Context, string, store.UpdateAgentIn
 	return domain.Agent{}, nil
 }
 func (s *approvalStore) TouchAgentLastSeen(context.Context, string) error { return nil }
+func (s *approvalStore) RegisterGateway(context.Context, store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s *approvalStore) ListGateways(context.Context, string) ([]domain.Gateway, error) {
+	return nil, nil
+}
+func (s *approvalStore) GetGateway(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s *approvalStore) GetGatewayByCredentialHash(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s *approvalStore) UpdateGatewayHeartbeat(context.Context, string, store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s *approvalStore) GetOrgPolicyVersion(context.Context, string) (int64, error) { return 0, nil }
+func (s *approvalStore) ListRulesForOrgSnapshot(context.Context, string) ([]domain.PolicyRule, error) {
+	return nil, nil
+}
 
 func TestApproveOnceUsesOnceAuditEvent(t *testing.T) {
 	st := &approvalStore{
@@ -260,6 +279,23 @@ func (rememberStore) UpdateAgent(context.Context, string, store.UpdateAgentInput
 	return domain.Agent{}, nil
 }
 func (rememberStore) TouchAgentLastSeen(context.Context, string) error { return nil }
+func (rememberStore) RegisterGateway(context.Context, store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (rememberStore) ListGateways(context.Context, string) ([]domain.Gateway, error) { return nil, nil }
+func (rememberStore) GetGateway(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (rememberStore) GetGatewayByCredentialHash(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (rememberStore) UpdateGatewayHeartbeat(context.Context, string, store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (rememberStore) GetOrgPolicyVersion(context.Context, string) (int64, error) { return 0, nil }
+func (rememberStore) ListRulesForOrgSnapshot(context.Context, string) ([]domain.PolicyRule, error) {
+	return nil, nil
+}
 
 func TestApproveRememberRejectsCONNECT(t *testing.T) {
 	svc := service.NewEgress(rememberStore{

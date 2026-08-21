@@ -119,3 +119,19 @@ func (s *EgressService) UpdateAgent(ctx context.Context, id string, body domain.
 	}
 	return s.store.UpdateAgent(ctx, id, in)
 }
+
+func (s *EgressService) ListGateways(ctx context.Context, orgID string) ([]domain.Gateway, error) {
+	return s.store.ListGateways(ctx, orgID)
+}
+
+func (s *EgressService) GetGateway(ctx context.Context, id string) (domain.Gateway, error) {
+	return s.store.GetGateway(ctx, id)
+}
+
+func (s *EgressService) GetOrgPolicyVersion(ctx context.Context, orgID string) (int64, error) {
+	return s.store.GetOrgPolicyVersion(ctx, orgID)
+}
+
+func (s *EgressService) ListRulesForOrgSnapshot(ctx context.Context, orgID string) ([]domain.PolicyRule, error) {
+	return s.store.ListRulesForOrgSnapshot(ctx, orgID)
+}

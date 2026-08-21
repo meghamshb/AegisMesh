@@ -99,6 +99,23 @@ func (noopStore) GetAgentCredentialByHash(context.Context, string) (domain.Agent
 }
 func (noopStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 func (noopStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
+func (noopStore) RegisterGateway(context.Context, store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (noopStore) ListGateways(context.Context, string) ([]domain.Gateway, error) { return nil, nil }
+func (noopStore) GetGateway(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (noopStore) GetGatewayByCredentialHash(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (noopStore) UpdateGatewayHeartbeat(context.Context, string, store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (noopStore) GetOrgPolicyVersion(context.Context, string) (int64, error) { return 0, nil }
+func (noopStore) ListRulesForOrgSnapshot(context.Context, string) ([]domain.PolicyRule, error) {
+	return nil, nil
+}
 
 func testApp() *app.App {
 	cfg := config.Config{

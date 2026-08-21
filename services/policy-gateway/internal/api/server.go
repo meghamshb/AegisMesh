@@ -68,6 +68,16 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/v1/agents", s.handleRegisterAgent)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/credentials/rotate", s.handleRotateAgentCredential)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/revoke", s.handleRevokeAgent)
+	s.mux.HandleFunc("POST /api/v1/gateways", s.handleRegisterGateway)
+	s.mux.HandleFunc("GET /api/v1/gateways", s.handleListGateways)
+	s.mux.HandleFunc("GET /api/v1/gateways/{id}", s.handleGetGateway)
+
+	// /api/internal/v1/* is the gateway-to-control-plane surface (Phase 5.9).
+	// It is never exposed to the browser and is gated by a gateway
+	// credential (authorizeGateway), not the admin token.
+	s.mux.HandleFunc("POST /api/internal/v1/gateways/{id}/heartbeat", s.handleGatewayHeartbeat)
+	s.mux.HandleFunc("GET /api/internal/v1/policies/snapshot", s.handlePolicySnapshot)
+	s.mux.HandleFunc("POST /api/internal/v1/agents/authenticate", s.handleInternalAuthenticateAgent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -803,6 +813,220 @@ func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, agent)
+}
+
+func (s *Server) handleRegisterGateway(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	var body domain.RegisterGatewayBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		s.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	gw, token, err := s.identity.RegisterGateway(ctx, identity.RegisterGatewayInput{
+		OrgID:    s.cfg.Identity.OrgID,
+		Name:     body.Name,
+		Metadata: body.Metadata,
+	})
+	if err != nil {
+		s.logger.Error("register gateway", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to register gateway")
+		return
+	}
+
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"gateway": gw,
+		"credential": map[string]any{
+			"token":        token,
+			"token_prefix": gw.CredentialPrefix,
+			"created_at":   gw.CreatedAt,
+		},
+	})
+}
+
+func (s *Server) handleListGateways(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	gateways, err := s.egress.ListGateways(ctx, s.cfg.Identity.OrgID)
+	if err != nil {
+		s.logger.Error("list gateways", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to list gateways")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": gateways})
+}
+
+func (s *Server) handleGetGateway(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "gateway id is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	gw, err := s.egress.GetGateway(ctx, id)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, gw)
+}
+
+// authorizeGateway validates the Authorization: Bearer <clr_gateway_...>
+// header against a real, active gateway credential. Unlike authorizeAdmin
+// this always requires a valid credential - there is no "auth disabled"
+// escape hatch for the internal gateway-to-control-plane surface.
+func (s *Server) authorizeGateway(w http.ResponseWriter, r *http.Request) (domain.AuthenticatedGateway, bool) {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	var token string
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		token = strings.TrimSpace(authHeader[len("Bearer "):])
+	}
+	if token == "" {
+		s.writeError(w, http.StatusUnauthorized, "gateway credential required")
+		return domain.AuthenticatedGateway{}, false
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	authed, err := s.identity.AuthenticateGatewayToken(ctx, token)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "invalid or revoked gateway credential")
+		return domain.AuthenticatedGateway{}, false
+	}
+	return authed, true
+}
+
+func (s *Server) handleGatewayHeartbeat(w http.ResponseWriter, r *http.Request) {
+	authed, ok := s.authorizeGateway(w, r)
+	if !ok {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	// The credential must belong to the gateway named in the URL - a valid
+	// Gateway A credential must never be usable to heartbeat as Gateway B.
+	if id == "" || id != authed.GatewayID {
+		s.writeError(w, http.StatusForbidden, "credential does not match gateway id")
+		return
+	}
+
+	var body domain.GatewayHeartbeatBody
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	gw, err := s.identity.Heartbeat(ctx, id, store.GatewayHeartbeatInput{Version: body.Version})
+	if err != nil {
+		s.logger.Error("gateway heartbeat", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to record heartbeat")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, gw)
+}
+
+func (s *Server) handlePolicySnapshot(w http.ResponseWriter, r *http.Request) {
+	authed, ok := s.authorizeGateway(w, r)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	version, err := s.egress.GetOrgPolicyVersion(ctx, authed.OrgID)
+	if err != nil {
+		s.logger.Error("get org policy version", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to build policy snapshot")
+		return
+	}
+	rules, err := s.egress.ListRulesForOrgSnapshot(ctx, authed.OrgID)
+	if err != nil {
+		s.logger.Error("list org policy rules for snapshot", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to build policy snapshot")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, domain.PolicySnapshot{
+		OrgID:       authed.OrgID,
+		Version:     version,
+		GeneratedAt: time.Now().UTC(),
+		Rules:       rules,
+	})
+}
+
+func (s *Server) handleInternalAuthenticateAgent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeGateway(w, r); !ok {
+		return
+	}
+
+	var body struct {
+		TokenHash string `json:"token_hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.TokenHash) == "" {
+		s.writeError(w, http.StatusBadRequest, "token_hash is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	authed, err := s.identity.AuthenticateAgentTokenHash(ctx, strings.TrimSpace(body.TokenHash))
+	if err != nil {
+		switch {
+		case errors.Is(err, identity.ErrInvalidToken), errors.Is(err, identity.ErrCredentialRevoked):
+			s.writeError(w, http.StatusUnauthorized, "invalid or revoked agent credential")
+		case errors.Is(err, identity.ErrAgentRevoked), errors.Is(err, identity.ErrOwnerDisabled), errors.Is(err, identity.ErrOrgSuspended):
+			s.writeError(w, http.StatusForbidden, err.Error())
+		default:
+			s.logger.Error("internal authenticate agent", "error", err)
+			s.writeError(w, http.StatusInternalServerError, "failed to authenticate agent")
+		}
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id":     authed.AgentID,
+		"user_id":      authed.OwnerUserID,
+		"org_id":       authed.OrgID,
+		"agent_status": "active",
+		"user_status":  "active",
+		"org_status":   "active",
+	})
 }
 
 func (s *Server) handleDirectoryError(w http.ResponseWriter, err error) {

@@ -97,6 +97,23 @@ func (s stubStore) UpdateUser(context.Context, string, store.UpdateUserInput) (d
 func (s stubStore) UpdateAgent(context.Context, string, store.UpdateAgentInput) (domain.Agent, error) {
 	return domain.Agent{}, nil
 }
+func (s stubStore) RegisterGateway(context.Context, store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s stubStore) ListGateways(context.Context, string) ([]domain.Gateway, error) { return nil, nil }
+func (s stubStore) GetGateway(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s stubStore) GetGatewayByCredentialHash(context.Context, string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s stubStore) UpdateGatewayHeartbeat(context.Context, string, store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (s stubStore) GetOrgPolicyVersion(context.Context, string) (int64, error) { return 0, nil }
+func (s stubStore) ListRulesForOrgSnapshot(context.Context, string) ([]domain.PolicyRule, error) {
+	return nil, nil
+}
 
 func TestEvaluatePendingWhenNoRules(t *testing.T) {
 	engine := policy.NewRuleEngine(stubStore{})

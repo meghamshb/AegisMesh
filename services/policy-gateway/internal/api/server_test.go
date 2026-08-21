@@ -23,6 +23,7 @@ type stubStore struct {
 	organization domain.Organization
 	users        []domain.User
 	agents       []domain.Agent
+	gateways     []domain.Gateway
 }
 
 func (stubStore) Ping(_ context.Context) error { return nil }
@@ -204,6 +205,57 @@ func (s stubStore) UpdateAgent(_ context.Context, id string, in store.UpdateAgen
 		}
 	}
 	return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
+}
+
+func (s stubStore) RegisterGateway(_ context.Context, in store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{
+		ID: "new-gateway-id", OrgID: in.OrgID, Name: in.Name, Status: "active",
+		CredentialPrefix: in.CredentialPrefix, CredentialHash: in.CredentialHash,
+	}, nil
+}
+
+func (s stubStore) ListGateways(_ context.Context, orgID string) ([]domain.Gateway, error) {
+	filtered := make([]domain.Gateway, 0)
+	for _, gw := range s.gateways {
+		if orgID != "" && gw.OrgID != orgID {
+			continue
+		}
+		filtered = append(filtered, gw)
+	}
+	return filtered, nil
+}
+
+func (s stubStore) GetGateway(_ context.Context, id string) (domain.Gateway, error) {
+	for _, gw := range s.gateways {
+		if gw.ID == id {
+			return gw, nil
+		}
+	}
+	return domain.Gateway{}, domain.ErrNotFound{Resource: "gateway", ID: id}
+}
+
+func (s stubStore) GetGatewayByCredentialHash(_ context.Context, hash string) (domain.Gateway, error) {
+	for _, gw := range s.gateways {
+		if gw.CredentialHash == hash {
+			return gw, nil
+		}
+	}
+	return domain.Gateway{}, domain.ErrNotFound{Resource: "gateway", ID: "credential"}
+}
+
+func (s stubStore) UpdateGatewayHeartbeat(_ context.Context, id string, _ store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	for _, gw := range s.gateways {
+		if gw.ID == id {
+			return gw, nil
+		}
+	}
+	return domain.Gateway{}, domain.ErrNotFound{Resource: "gateway", ID: id}
+}
+
+func (s stubStore) GetOrgPolicyVersion(_ context.Context, _ string) (int64, error) { return 3, nil }
+
+func (s stubStore) ListRulesForOrgSnapshot(_ context.Context, orgID string) ([]domain.PolicyRule, error) {
+	return []domain.PolicyRule{{ID: "snapshot-rule", OrgID: orgID, Scope: domain.RuleScopeOrg, Effect: domain.RuleEffectAllow}}, nil
 }
 
 func TestHealthOK(t *testing.T) {
@@ -652,5 +704,189 @@ func TestPaginationRejectsInvalidLimit(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRegisterGateway(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gateways", strings.NewReader(`{"name":"macbook-gateway"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Gateway    domain.Gateway `json:"gateway"`
+		Credential struct {
+			Token       string `json:"token"`
+			TokenPrefix string `json:"token_prefix"`
+		} `json:"credential"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Gateway.Name != "macbook-gateway" {
+		t.Fatalf("gateway name = %q, want macbook-gateway", payload.Gateway.Name)
+	}
+	if !strings.HasPrefix(payload.Credential.Token, "clr_gateway_") {
+		t.Fatalf("credential token = %q, want clr_gateway_ prefix", payload.Credential.Token)
+	}
+}
+
+func TestRegisterGatewayRequiresName(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gateways", strings.NewReader(`{"name":""}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func gatewayFixture(t *testing.T) (stubStore, string) {
+	t.Helper()
+	token := "clr_gateway_test-token"
+	fixtures := testDirectoryFixtures()
+	fixtures.gateways = []domain.Gateway{
+		{ID: "gw-1", OrgID: "org-1", Name: "macbook-gateway", Status: "active", CredentialHash: identity.HashToken(token)},
+		{ID: "gw-revoked", OrgID: "org-1", Name: "old-gateway", Status: "revoked", CredentialHash: identity.HashToken("clr_gateway_revoked-token")},
+	}
+	return fixtures, token
+}
+
+func TestListGateways(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/gateways", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var payload struct {
+		Items []domain.Gateway `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(payload.Items))
+	}
+}
+
+func TestGatewayHeartbeatRequiresValidCredential(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/gateways/gw-1/heartbeat", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a credential", rec.Code)
+	}
+}
+
+func TestGatewayHeartbeatSucceedsWithValidCredential(t *testing.T) {
+	fixtures, token := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/gateways/gw-1/heartbeat", strings.NewReader(`{"version":"0.1.0"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGatewayHeartbeatRejectsMismatchedGatewayID(t *testing.T) {
+	fixtures, token := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	// token belongs to gw-1; heartbeating as a different gateway ID must fail,
+	// even though the credential is otherwise valid.
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/gateways/some-other-gateway/heartbeat", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestGatewayHeartbeatRejectsRevokedGateway(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/gateways/gw-revoked/heartbeat", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer clr_gateway_revoked-token")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a revoked gateway credential", rec.Code)
+	}
+}
+
+func TestPolicySnapshotRequiresGatewayCredential(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/v1/policies/snapshot", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a gateway credential", rec.Code)
+	}
+}
+
+func TestPolicySnapshotReturnsVersionedRules(t *testing.T) {
+	fixtures, token := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/v1/policies/snapshot", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var snap domain.PolicySnapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if snap.OrgID != "org-1" {
+		t.Fatalf("org_id = %q, want org-1 (derived from the gateway credential, not client-supplied)", snap.OrgID)
+	}
+	if snap.Version != 3 {
+		t.Fatalf("version = %d, want 3", snap.Version)
+	}
+	if len(snap.Rules) != 1 {
+		t.Fatalf("len(rules) = %d, want 1", len(snap.Rules))
+	}
+}
+
+func TestInternalAuthenticateAgentRequiresGatewayCredential(t *testing.T) {
+	fixtures, _ := gatewayFixture(t)
+	srv := newDirectoryTestServer(fixtures)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/v1/agents/authenticate", strings.NewReader(`{"token_hash":"abc"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a gateway credential", rec.Code)
 	}
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,16 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/remoteidentity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/service"
 )
+
+// remoteAgentAuthenticator is satisfied by *remoteidentity.CachedClient. A
+// narrow local interface keeps this package's tests free of a real HTTP
+// client.
+type remoteAgentAuthenticator interface {
+	Authenticate(ctx context.Context, tokenHash string) (config.AgentIdentity, error)
+}
 
 type Handler struct {
 	enabled               bool
@@ -26,6 +35,7 @@ type Handler struct {
 	userIDHeader          string
 	egress                *service.EgressService
 	identitySvc           *identity.Service
+	remoteAgentAuth       remoteAgentAuthenticator
 	logger                *slog.Logger
 	transport             *http.Transport
 }
@@ -37,6 +47,13 @@ func NewHandler(
 	identitySvc *identity.Service,
 	logger *slog.Logger,
 ) *Handler {
+	var remoteAuth remoteAgentAuthenticator
+	if cfg.Mode == config.ModeGateway && cfg.ControlPlaneURL != "" {
+		remoteAuth = remoteidentity.NewCachedClient(
+			remoteidentity.NewClient(cfg.ControlPlaneURL, cfg.GatewayToken),
+			cfg.AgentIdentityCacheTTL,
+		)
+	}
 	return &Handler{
 		enabled:               enabled,
 		authMode:              cfg.AgentAuthMode,
@@ -46,6 +63,7 @@ func NewHandler(
 		userIDHeader:          cfg.UserIDHeader,
 		egress:                egress,
 		identitySvc:           identitySvc,
+		remoteAgentAuth:       remoteAuth,
 		logger:                logger,
 		transport: &http.Transport{
 			Proxy: nil,
@@ -161,6 +179,13 @@ func (h *Handler) resolveTokenIdentity(r *http.Request) (config.AgentIdentity, e
 	token, ok := extractProxyToken(r)
 	if !ok {
 		return config.AgentIdentity{}, identity.ErrInvalidToken
+	}
+
+	// Fleet mode (Phase 5.9.10): resolve identity via the control plane's
+	// internal API instead of a direct DB lookup, hashing locally so the
+	// plaintext token never crosses the network.
+	if h.remoteAgentAuth != nil {
+		return h.remoteAgentAuth.Authenticate(r.Context(), identity.HashAgentToken(token))
 	}
 
 	authed, err := h.identitySvc.AuthenticateAgentToken(r.Context(), token)

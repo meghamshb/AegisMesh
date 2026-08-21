@@ -949,6 +949,69 @@ NemoHermes install, OpenShell gateway, LAP fork, fleet rollout UI, or Portfolio 
 
 ---
 
+## Phase 5.9 — Gateway registration and policy synchronization (implemented)
+
+A gateway is registered separately from agents, with its own credential
+(`clr_gateway_...`) - a distinct trust domain from agent credentials
+(`clr_agent_...`). A gateway authenticates to the control plane's internal
+API (`/api/internal/v1/*`, never exposed to browsers) with this credential,
+never the admin token.
+
+### Policy snapshot and versioning
+
+- `organization_policy_versions(org_id, version)` increments by 1 inside the
+  same transaction as any `policy_rules` create or revoke (including the
+  approve+remember flow, which creates a rule).
+- `GET /api/internal/v1/policies/snapshot` derives `org_id` from the
+  authenticated gateway credential - never from a client-supplied value - and
+  returns that org's active (non-expired) rules plus the current version.
+- The snapshot intentionally excludes request-history state (standing
+  agent-denies, approve-once grants): those remain server-side lookups, not
+  part of the cached rule set a gateway holds locally.
+
+### Fail-closed / last-known-good (locked decision)
+
+- **Cold start:** if a gateway process is configured with a control-plane
+  URL and cannot load an initial snapshot, it must not start proxying
+  traffic. `internal/policycache.Cache.Start` returns an error in this case,
+  and `cmd/gateway/main.go` exits the process rather than listening -
+  verified live: an unreachable `CLEARANCE_CONTROL_URL` causes the process
+  to exit non-zero before binding its listener.
+- **Transient control-plane outage after a successful load:** the gateway
+  keeps enforcing the last-known-good snapshot for up to
+  `CLEARANCE_POLICY_MAX_STALE` (default 15m; dev default is shorter). A
+  refresh failure during this window only logs a warning.
+- **Beyond max-stale:** `Cache.Rules()` returns `ok=false`, which callers
+  must treat as fail-closed (do not evaluate against an unknown/expired
+  policy set).
+- Refresh interval: `CLEARANCE_POLICY_REFRESH_INTERVAL` (default 5s).
+
+### Agent identity without direct gateway DB access
+
+`POST /api/internal/v1/agents/authenticate` accepts a **SHA-256 hash** of an
+agent token, never the plaintext - a distributed gateway hashes locally
+(`identity.HashAgentToken`) and only sends the hash over the wire. The
+response carries `agent_id`/`user_id`/`org_id`; a short-TTL cache
+(`internal/remoteidentity`, default 10s dev / configurable via
+`CLEARANCE_AGENT_IDENTITY_CACHE_TTL`) avoids a control-plane round trip per
+proxied request. This path is opt-in: it only activates when
+`CLEARANCE_MODE=gateway` and `CLEARANCE_CONTROL_URL` is set; the default
+single-process deployment is completely unaffected and keeps resolving
+agent identity via a direct Postgres lookup, as before.
+
+### Deliberately deferred to Phase 5.10
+
+Live per-request **policy rule evaluation** (`MatchRules`) still reads
+Postgres directly in every mode, including `gateway` mode with a control
+URL configured. The snapshot cache above is fully built and tested
+end-to-end (fetch, refresh, fail-closed, staleness), but wiring it into the
+hot evaluation path also requires deciding how standing-deny/approve-once
+request-history lookups work for a gateway that no longer holds a direct DB
+connection - that's exactly the kind of decision the multi-gateway fleet
+demo (5.10) will make concrete, rather than guessing at it here.
+
+---
+
 ## Document history
 
 | Date | Change |

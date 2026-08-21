@@ -121,6 +121,19 @@ func (f *fakeStore) GetUser(_ context.Context, id string) (domain.User, error) {
 	return domain.User{ID: id, Status: status}, nil
 }
 
+func (f *fakeStore) RegisterGateway(_ context.Context, in store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (f *fakeStore) GetGateway(_ context.Context, id string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (f *fakeStore) GetGatewayByCredentialHash(_ context.Context, hash string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (f *fakeStore) UpdateGatewayHeartbeat(_ context.Context, id string, _ store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+
 func (f *fakeStore) GetOrganization(_ context.Context, id string) (domain.Organization, error) {
 	status := f.orgStatus
 	if status == "" {

@@ -37,6 +37,10 @@ type Store interface {
 	TouchAgentLastSeen(ctx context.Context, agentID string) error
 	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
 	GetUser(ctx context.Context, id string) (domain.User, error)
+	RegisterGateway(ctx context.Context, in store.RegisterGatewayInput) (domain.Gateway, error)
+	GetGateway(ctx context.Context, id string) (domain.Gateway, error)
+	GetGatewayByCredentialHash(ctx context.Context, credentialHash string) (domain.Gateway, error)
+	UpdateGatewayHeartbeat(ctx context.Context, id string, in store.GatewayHeartbeatInput) (domain.Gateway, error)
 }
 
 // Service owns agent registration and the agent credential lifecycle:
@@ -159,7 +163,16 @@ type AuthenticatedAgent struct {
 // request, to derive identity from Proxy-Authorization instead of trusting
 // client-supplied headers.
 func (s *Service) AuthenticateAgentToken(ctx context.Context, token string) (AuthenticatedAgent, error) {
-	cred, err := s.store.GetAgentCredentialByHash(ctx, HashAgentToken(token))
+	return s.AuthenticateAgentTokenHash(ctx, HashAgentToken(token))
+}
+
+// AuthenticateAgentTokenHash is AuthenticateAgentToken's hash-input variant:
+// callers who already have the SHA-256 hash (a remote gateway, per Phase
+// 5.9.10, hashes locally and never sends the plaintext token over the
+// network) use this directly instead of re-deriving the hash from a token
+// they don't have.
+func (s *Service) AuthenticateAgentTokenHash(ctx context.Context, tokenHash string) (AuthenticatedAgent, error) {
+	cred, err := s.store.GetAgentCredentialByHash(ctx, tokenHash)
 	if err != nil {
 		var notFound domain.ErrNotFound
 		if errors.As(err, &notFound) {

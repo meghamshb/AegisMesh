@@ -80,6 +80,19 @@ func (f *fakeIdentityStore) GetUser(_ context.Context, id string) (domain.User, 
 	return domain.User{ID: id, Status: "active"}, nil
 }
 
+func (f *fakeIdentityStore) RegisterGateway(_ context.Context, in store.RegisterGatewayInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (f *fakeIdentityStore) GetGateway(_ context.Context, id string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (f *fakeIdentityStore) GetGatewayByCredentialHash(_ context.Context, hash string) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+func (f *fakeIdentityStore) UpdateGatewayHeartbeat(_ context.Context, id string, _ store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	return domain.Gateway{}, nil
+}
+
 func (f *fakeIdentityStore) GetOrganization(_ context.Context, id string) (domain.Organization, error) {
 	org, ok := f.orgs[id]
 	if !ok {
@@ -276,5 +289,71 @@ func TestForwardHTTPStripsProxyAuthorization(t *testing.T) {
 	}
 	if gotConn != "" {
 		t.Fatalf("upstream received Proxy-Connection = %q, want empty", gotConn)
+	}
+}
+
+// fakeRemoteAgentAuth is a minimal remoteAgentAuthenticator fake proving
+// resolveTokenIdentity uses the remote (fleet-mode) path when configured,
+// instead of identitySvc's direct-DB path.
+type fakeRemoteAgentAuth struct {
+	byHash map[string]config.AgentIdentity
+	calls  int
+}
+
+func (f *fakeRemoteAgentAuth) Authenticate(_ context.Context, tokenHash string) (config.AgentIdentity, error) {
+	f.calls++
+	id, ok := f.byHash[tokenHash]
+	if !ok {
+		return config.AgentIdentity{}, identity.ErrInvalidToken
+	}
+	return id, nil
+}
+
+func TestResolveIdentityUsesRemoteAuthWhenConfigured(t *testing.T) {
+	hashA := identity.HashAgentToken("clr_agent_remote-token-a")
+	remote := &fakeRemoteAgentAuth{byHash: map[string]config.AgentIdentity{
+		hashA: {OrgID: "org-1", UserID: "alice", AgentID: "agent-a"},
+	}}
+
+	h := &Handler{
+		enabled:         true,
+		authMode:        config.AgentAuthModeToken,
+		remoteAgentAuth: remote,
+		// identitySvc deliberately left nil: if resolveTokenIdentity fell
+		// through to the direct-DB path it would nil-panic, proving remote
+		// really is used instead.
+		logger: testLogger(),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Proxy-Authorization", "Bearer clr_agent_remote-token-a")
+
+	got, err := h.resolveIdentity(req)
+	if err != nil {
+		t.Fatalf("resolveIdentity() error = %v", err)
+	}
+	if got.AgentID != "agent-a" || got.UserID != "alice" || got.OrgID != "org-1" {
+		t.Fatalf("unexpected identity: %+v", got)
+	}
+	if remote.calls != 1 {
+		t.Fatalf("expected remote auth to be called once, got %d", remote.calls)
+	}
+}
+
+func TestResolveIdentityRemoteAuthInvalidToken(t *testing.T) {
+	remote := &fakeRemoteAgentAuth{byHash: map[string]config.AgentIdentity{}}
+	h := &Handler{
+		enabled:         true,
+		authMode:        config.AgentAuthModeToken,
+		remoteAgentAuth: remote,
+		logger:          testLogger(),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Proxy-Authorization", "Bearer clr_agent_unknown-token")
+
+	_, err := h.resolveIdentity(req)
+	if !errors.Is(err, identity.ErrInvalidToken) {
+		t.Fatalf("error = %v, want ErrInvalidToken", err)
 	}
 }

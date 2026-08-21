@@ -140,6 +140,19 @@ type CreateAgentCredentialInput struct {
 	CreatedBy   string
 }
 
+type RegisterGatewayInput struct {
+	OrgID            string
+	Name             string
+	CredentialPrefix string
+	CredentialHash   string
+	Metadata         map[string]any
+}
+
+type GatewayHeartbeatInput struct {
+	Version  string
+	Metadata map[string]any
+}
+
 type Store interface {
 	Ping(ctx context.Context) error
 	ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error)
@@ -172,4 +185,11 @@ type Store interface {
 	GetAgentCredentialByHash(ctx context.Context, tokenHash string) (domain.AgentCredential, error)
 	TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error
 	TouchAgentLastSeen(ctx context.Context, agentID string) error
+	RegisterGateway(ctx context.Context, in RegisterGatewayInput) (domain.Gateway, error)
+	ListGateways(ctx context.Context, orgID string) ([]domain.Gateway, error)
+	GetGateway(ctx context.Context, id string) (domain.Gateway, error)
+	GetGatewayByCredentialHash(ctx context.Context, credentialHash string) (domain.Gateway, error)
+	UpdateGatewayHeartbeat(ctx context.Context, id string, in GatewayHeartbeatInput) (domain.Gateway, error)
+	GetOrgPolicyVersion(ctx context.Context, orgID string) (int64, error)
+	ListRulesForOrgSnapshot(ctx context.Context, orgID string) ([]domain.PolicyRule, error)
 }

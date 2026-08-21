@@ -23,6 +23,10 @@ const (
 	defaultUserID  = "11111111-1111-1111-1111-111111111001"
 	defaultAgentID = "11111111-1111-1111-1111-111111111020"
 	defaultAdminID = "11111111-1111-1111-1111-111111111002"
+
+	defaultPolicyRefreshInterval = 5 * time.Second
+	defaultPolicyMaxStale        = 15 * time.Minute
+	defaultAgentIdentityCacheTTL = 10 * time.Second
 )
 
 type AgentIdentity struct {
@@ -51,6 +55,18 @@ type Config struct {
 	AgentIDHeader         string
 	UserIDHeader          string
 	AgentAuthMode         string
+
+	// Fleet mode (Phase 5.9): when ControlPlaneURL is set and Mode is
+	// "gateway", the proxy resolves agent identity via the control plane's
+	// internal API instead of a direct DB lookup. GatewayToken authenticates
+	// this process to that API. Policy *rule evaluation* still reads
+	// directly from Postgres in this phase (see internal/policycache for the
+	// snapshot cache itself, wired in starting Phase 5.10's fleet demo).
+	ControlPlaneURL       string
+	GatewayToken          string
+	PolicyRefreshInterval time.Duration
+	PolicyMaxStale        time.Duration
+	AgentIdentityCacheTTL time.Duration
 }
 
 const (
@@ -92,6 +108,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	policyRefreshInterval, err := durationEnv("CLEARANCE_POLICY_REFRESH_INTERVAL", defaultPolicyRefreshInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	policyMaxStale, err := durationEnv("CLEARANCE_POLICY_MAX_STALE", defaultPolicyMaxStale)
+	if err != nil {
+		return Config{}, err
+	}
+	agentIdentityCacheTTL, err := durationEnv("CLEARANCE_AGENT_IDENTITY_CACHE_TTL", defaultAgentIdentityCacheTTL)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Mode:              envOrDefault("CLEARANCE_MODE", ModeAll),
@@ -117,6 +145,11 @@ func Load() (Config, error) {
 		AgentIDHeader:         envOrDefault("GATEWAY_AGENT_ID_HEADER", "X-Gateway-Agent-Id"),
 		UserIDHeader:          envOrDefault("GATEWAY_USER_ID_HEADER", "X-Gateway-User-Id"),
 		AgentAuthMode:         envOrDefault("GATEWAY_AGENT_AUTH_MODE", AgentAuthModeStatic),
+		ControlPlaneURL:       strings.TrimSpace(os.Getenv("CLEARANCE_CONTROL_URL")),
+		GatewayToken:          strings.TrimSpace(os.Getenv("CLEARANCE_GATEWAY_TOKEN")),
+		PolicyRefreshInterval: policyRefreshInterval,
+		PolicyMaxStale:        policyMaxStale,
+		AgentIdentityCacheTTL: agentIdentityCacheTTL,
 	}
 
 	if cfg.PostgresDSN == "" {
