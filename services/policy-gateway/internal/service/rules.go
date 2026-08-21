@@ -57,7 +57,7 @@ func (s *EgressService) validateScopeRef(ctx context.Context, orgID string, scop
 		if scopeRefID == "" {
 			return invalid
 		}
-		user, err := s.store.GetUser(ctx, scopeRefID)
+		user, err := s.store.GetUser(ctx, orgID, scopeRefID)
 		if err != nil || user.OrgID != orgID {
 			return invalid
 		}
@@ -65,7 +65,7 @@ func (s *EgressService) validateScopeRef(ctx context.Context, orgID string, scop
 		if scopeRefID == "" {
 			return invalid
 		}
-		agent, err := s.store.GetAgent(ctx, scopeRefID)
+		agent, err := s.store.GetAgent(ctx, orgID, scopeRefID)
 		if err != nil || agent.OrgID != orgID {
 			return invalid
 		}
@@ -114,6 +114,7 @@ func (s *EgressService) CreateRule(ctx context.Context, orgID, adminID string, b
 		ExpiresAt:  body.ExpiresAt,
 		CreatedBy:  adminID,
 	}, store.AuditInput{
+		OrgID:     orgID,
 		EventType: "policy_rule_created",
 		ActorID:   adminID,
 		Metadata: map[string]any{

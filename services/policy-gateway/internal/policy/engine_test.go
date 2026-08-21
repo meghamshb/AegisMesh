@@ -7,116 +7,44 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policy"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store/storetest"
 )
 
+// stubStore overrides only the four methods the rule engine actually calls;
+// storetest.Stub supplies the rest of store.Store.
 type stubStore struct {
+	storetest.Stub
 	rules              []domain.PolicyRule
 	consumableApproval *domain.EgressRequest
 	deniedPattern      bool
+
+	// lastMatch/lastApprovalMatch record what the engine asked for, so tests
+	// can assert the caller's org is actually propagated into the query.
+	lastMatch         *store.MatchRulesInput
+	lastApprovalMatch *store.ApprovalMatchInput
 }
 
-func (s stubStore) Ping(context.Context) error { return nil }
-func (s stubStore) ListRequests(context.Context, store.ListRequestsInput) ([]domain.EgressRequest, error) {
-	return nil, nil
-}
-func (s stubStore) ListRules(context.Context, store.ListRulesInput) ([]domain.PolicyRule, error) {
+func (s *stubStore) ListRules(context.Context, store.ListRulesInput) ([]domain.PolicyRule, error) {
 	return s.rules, nil
-}
-func (s stubStore) ListAuditEvents(context.Context, store.ListAuditEventsInput) ([]domain.AuditEvent, error) {
-	return nil, nil
-}
-func (s stubStore) MatchRules(_ context.Context, _ store.MatchRulesInput) ([]domain.PolicyRule, error) {
-	return s.rules, nil
-}
-func (s stubStore) CreateEgressRequest(context.Context, store.CreateEgressRequestInput) (domain.EgressRequest, error) {
-	return domain.EgressRequest{}, nil
-}
-func (s stubStore) InsertAuditEvent(context.Context, string, string, string, map[string]any) error {
-	return nil
-}
-func (s stubStore) GetEgressRequest(context.Context, string) (domain.EgressRequest, error) {
-	return domain.EgressRequest{}, nil
-}
-func (s stubStore) ApproveRequestOnce(context.Context, string, string, store.AuditInput) (domain.EgressRequest, error) {
-	return domain.EgressRequest{}, nil
-}
-func (s stubStore) ApproveRequestWithScopedRule(context.Context, string, string, domain.RuleScope, string, store.OrgRuleOptions, store.AuditInput) (domain.EgressRequest, domain.PolicyRule, error) {
-	return domain.EgressRequest{}, domain.PolicyRule{}, nil
 }
 
-func (s stubStore) CreatePolicyRule(context.Context, store.CreatePolicyRuleInput, store.AuditInput) (domain.PolicyRule, error) {
-	return domain.PolicyRule{}, nil
+func (s *stubStore) MatchRules(_ context.Context, in store.MatchRulesInput) ([]domain.PolicyRule, error) {
+	s.lastMatch = &in
+	return s.rules, nil
 }
-func (s stubStore) DeletePolicyRule(context.Context, string, store.AuditInput) error { return nil }
-func (s stubStore) DenyRequest(context.Context, string, string, string, store.AuditInput) (domain.EgressRequest, error) {
-	return domain.EgressRequest{}, nil
-}
-func (s stubStore) FindConsumableApproval(context.Context, store.ApprovalMatchInput) (*domain.EgressRequest, error) {
+
+func (s *stubStore) FindConsumableApproval(_ context.Context, in store.ApprovalMatchInput) (*domain.EgressRequest, error) {
+	s.lastApprovalMatch = &in
 	return s.consumableApproval, nil
 }
-func (s stubStore) HasDeniedPattern(context.Context, store.ApprovalMatchInput) (bool, error) {
+
+func (s *stubStore) HasDeniedPattern(_ context.Context, in store.ApprovalMatchInput) (bool, error) {
+	s.lastApprovalMatch = &in
 	return s.deniedPattern, nil
-}
-func (s stubStore) MarkApprovalConsumed(context.Context, string) error { return nil }
-func (s stubStore) GetOrganization(context.Context, string) (domain.Organization, error) {
-	return domain.Organization{}, nil
-}
-func (s stubStore) ListUsers(context.Context, store.ListUsersInput) ([]domain.User, error) {
-	return nil, nil
-}
-func (s stubStore) GetUser(context.Context, string) (domain.User, error) { return domain.User{}, nil }
-func (s stubStore) ListAgents(context.Context, store.ListAgentsInput) ([]domain.Agent, error) {
-	return nil, nil
-}
-func (s stubStore) GetAgent(context.Context, string) (domain.Agent, error) {
-	return domain.Agent{}, nil
-}
-func (s stubStore) RegisterAgent(context.Context, store.RegisterAgentInput, store.AuditInput) (domain.Agent, error) {
-	return domain.Agent{}, nil
-}
-func (s stubStore) RevokeAgent(context.Context, string, store.AuditInput) (domain.Agent, error) {
-	return domain.Agent{}, nil
-}
-func (s stubStore) CreateAgentCredential(context.Context, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
-	return domain.AgentCredential{}, nil
-}
-func (s stubStore) RotateAgentCredential(context.Context, string, store.CreateAgentCredentialInput, store.AuditInput) (domain.AgentCredential, error) {
-	return domain.AgentCredential{}, nil
-}
-func (s stubStore) GetAgentCredentialByHash(context.Context, string) (domain.AgentCredential, error) {
-	return domain.AgentCredential{}, nil
-}
-func (s stubStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
-func (s stubStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
-func (s stubStore) CreateUser(context.Context, store.CreateUserInput) (domain.User, error) {
-	return domain.User{}, nil
-}
-func (s stubStore) UpdateUser(context.Context, string, store.UpdateUserInput) (domain.User, error) {
-	return domain.User{}, nil
-}
-func (s stubStore) UpdateAgent(context.Context, string, store.UpdateAgentInput) (domain.Agent, error) {
-	return domain.Agent{}, nil
-}
-func (s stubStore) RegisterGateway(context.Context, store.RegisterGatewayInput) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (s stubStore) ListGateways(context.Context, string) ([]domain.Gateway, error) { return nil, nil }
-func (s stubStore) GetGateway(context.Context, string) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (s stubStore) GetGatewayByCredentialHash(context.Context, string) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (s stubStore) UpdateGatewayHeartbeat(context.Context, string, store.GatewayHeartbeatInput) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (s stubStore) GetOrgPolicyVersion(context.Context, string) (int64, error) { return 0, nil }
-func (s stubStore) ListRulesForOrgSnapshot(context.Context, string) ([]domain.PolicyRule, error) {
-	return nil, nil
 }
 
 func TestEvaluatePendingWhenNoRules(t *testing.T) {
-	engine := policy.NewRuleEngine(stubStore{})
+	engine := policy.NewRuleEngine(&stubStore{})
 	eval, err := engine.Evaluate(context.Background(), policy.Request{
 		AgentID: "agent",
 		OrgID:   "org",
@@ -142,7 +70,7 @@ func TestEvaluateDenyBeforeAllow(t *testing.T) {
 		{ID: "allow-1", Effect: domain.RuleEffectAllow},
 		{ID: "deny-1", Effect: domain.RuleEffectDeny},
 	}
-	engine := policy.NewRuleEngine(stubStore{rules: rules})
+	engine := policy.NewRuleEngine(&stubStore{rules: rules})
 	eval, err := engine.Evaluate(context.Background(), policy.Request{
 		AgentID: "agent",
 		OrgID:   "org",
@@ -165,7 +93,7 @@ func TestEvaluateDenyBeforeAllow(t *testing.T) {
 
 func TestEvaluateConsumableApproval(t *testing.T) {
 	approvalID := "approval-1"
-	engine := policy.NewRuleEngine(stubStore{
+	engine := policy.NewRuleEngine(&stubStore{
 		consumableApproval: &domain.EgressRequest{ID: approvalID},
 	})
 	eval, err := engine.Evaluate(context.Background(), policy.Request{
@@ -190,7 +118,7 @@ func TestEvaluateConsumableApproval(t *testing.T) {
 
 func TestEvaluateOrgAllowRule(t *testing.T) {
 	ruleID := "org-allow-1"
-	engine := policy.NewRuleEngine(stubStore{
+	engine := policy.NewRuleEngine(&stubStore{
 		rules: []domain.PolicyRule{
 			{ID: ruleID, Effect: domain.RuleEffectAllow, Scope: domain.RuleScopeOrg},
 		},
@@ -221,7 +149,7 @@ func TestEvaluateOrgAllowRule(t *testing.T) {
 
 func TestEvaluateAgentDenyBeforeOrgAllow(t *testing.T) {
 	ruleID := "org-allow-1"
-	engine := policy.NewRuleEngine(stubStore{
+	engine := policy.NewRuleEngine(&stubStore{
 		rules: []domain.PolicyRule{
 			{ID: ruleID, Effect: domain.RuleEffectAllow, Scope: domain.RuleScopeOrg},
 		},
@@ -249,7 +177,7 @@ func TestEvaluateAgentDenyBeforeOrgAllow(t *testing.T) {
 }
 
 func TestEvaluateDeniedPattern(t *testing.T) {
-	engine := policy.NewRuleEngine(stubStore{deniedPattern: true})
+	engine := policy.NewRuleEngine(&stubStore{deniedPattern: true})
 	eval, err := engine.Evaluate(context.Background(), policy.Request{
 		AgentID: "agent",
 		OrgID:   "org",
@@ -344,7 +272,7 @@ func TestPrecedenceMatrix(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			engine := policy.NewRuleEngine(stubStore{rules: tc.rules})
+			engine := policy.NewRuleEngine(&stubStore{rules: tc.rules})
 			eval, err := engine.Evaluate(context.Background(), evalRequest())
 			if err != nil {
 				t.Fatalf("Evaluate() error = %v", err)

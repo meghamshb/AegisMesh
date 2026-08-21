@@ -65,9 +65,11 @@ func (s *Service) AuthenticateGatewayToken(ctx context.Context, token string) (d
 }
 
 // Heartbeat records that a gateway is alive and (optionally) which policy
-// version/binary version/metadata it currently holds.
-func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in store.GatewayHeartbeatInput) (domain.Gateway, error) {
-	gw, err := s.store.UpdateGatewayHeartbeat(ctx, gatewayID, in)
+// version/binary version/metadata it currently holds. orgID comes from the
+// authenticated gateway credential, so a valid credential can only ever
+// heartbeat a gateway inside its own org.
+func (s *Service) Heartbeat(ctx context.Context, orgID, gatewayID string, in store.GatewayHeartbeatInput) (domain.Gateway, error) {
+	gw, err := s.store.UpdateGatewayHeartbeat(ctx, orgID, gatewayID, in)
 	if err != nil {
 		return domain.Gateway{}, fmt.Errorf("gateway heartbeat: %w", err)
 	}

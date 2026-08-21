@@ -28,19 +28,20 @@ var (
 // Keeping it narrow makes unit tests cheap to fake.
 type Store interface {
 	RegisterAgent(ctx context.Context, in store.RegisterAgentInput, audit store.AuditInput) (domain.Agent, error)
-	RevokeAgent(ctx context.Context, agentID string, audit store.AuditInput) (domain.Agent, error)
-	GetAgent(ctx context.Context, id string) (domain.Agent, error)
+	RevokeAgent(ctx context.Context, orgID, agentID string, audit store.AuditInput) (domain.Agent, error)
+	GetAgent(ctx context.Context, orgID, id string) (domain.Agent, error)
+	ResolveAgentForAuth(ctx context.Context, id string) (domain.Agent, error)
 	CreateAgentCredential(ctx context.Context, in store.CreateAgentCredentialInput, audit store.AuditInput) (domain.AgentCredential, error)
-	RotateAgentCredential(ctx context.Context, agentID string, in store.CreateAgentCredentialInput, audit store.AuditInput) (domain.AgentCredential, error)
+	RotateAgentCredential(ctx context.Context, orgID, agentID string, in store.CreateAgentCredentialInput, audit store.AuditInput) (domain.AgentCredential, error)
 	GetAgentCredentialByHash(ctx context.Context, tokenHash string) (domain.AgentCredential, error)
 	TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error
 	TouchAgentLastSeen(ctx context.Context, agentID string) error
 	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
-	GetUser(ctx context.Context, id string) (domain.User, error)
+	GetUser(ctx context.Context, orgID, id string) (domain.User, error)
 	RegisterGateway(ctx context.Context, in store.RegisterGatewayInput) (domain.Gateway, error)
-	GetGateway(ctx context.Context, id string) (domain.Gateway, error)
+	GetGateway(ctx context.Context, orgID, id string) (domain.Gateway, error)
 	GetGatewayByCredentialHash(ctx context.Context, credentialHash string) (domain.Gateway, error)
-	UpdateGatewayHeartbeat(ctx context.Context, id string, in store.GatewayHeartbeatInput) (domain.Gateway, error)
+	UpdateGatewayHeartbeat(ctx context.Context, orgID, id string, in store.GatewayHeartbeatInput) (domain.Gateway, error)
 }
 
 // Service owns agent registration and the agent credential lifecycle:
@@ -71,6 +72,7 @@ func (s *Service) RegisterAgent(ctx context.Context, in RegisterAgentInput, acto
 		ContainerID: in.ContainerID,
 		Metadata:    in.Metadata,
 	}, store.AuditInput{
+		OrgID:     in.OrgID,
 		EventType: "agent_registered",
 		ActorID:   actorID,
 		Metadata:  map[string]any{"owner_user_id": in.OwnerUserID},
@@ -79,7 +81,7 @@ func (s *Service) RegisterAgent(ctx context.Context, in RegisterAgentInput, acto
 		return domain.Agent{}, "", domain.AgentCredential{}, fmt.Errorf("register agent: %w", err)
 	}
 
-	token, cred, err := s.IssueCredential(ctx, agent.ID, actorID)
+	token, cred, err := s.IssueCredential(ctx, in.OrgID, agent.ID, actorID)
 	if err != nil {
 		return domain.Agent{}, "", domain.AgentCredential{}, err
 	}
@@ -87,19 +89,23 @@ func (s *Service) RegisterAgent(ctx context.Context, in RegisterAgentInput, acto
 	return agent, token, cred, nil
 }
 
-// IssueCredential generates a new credential for an existing agent.
-func (s *Service) IssueCredential(ctx context.Context, agentID, actorID string) (string, domain.AgentCredential, error) {
+// IssueCredential generates a new credential for an existing agent. orgID is
+// the caller's organization; the store refuses to mint a credential for an
+// agent outside it.
+func (s *Service) IssueCredential(ctx context.Context, orgID, agentID, actorID string) (string, domain.AgentCredential, error) {
 	token, err := GenerateAgentToken()
 	if err != nil {
 		return "", domain.AgentCredential{}, err
 	}
 
 	cred, err := s.store.CreateAgentCredential(ctx, store.CreateAgentCredentialInput{
+		OrgID:       orgID,
 		AgentID:     agentID,
 		TokenPrefix: TokenDisplayPrefix(token),
 		TokenHash:   HashAgentToken(token),
 		CreatedBy:   actorID,
 	}, store.AuditInput{
+		OrgID:     orgID,
 		EventType: "agent_credential_created",
 		ActorID:   actorID,
 		Metadata:  map[string]any{},
@@ -113,18 +119,20 @@ func (s *Service) IssueCredential(ctx context.Context, agentID, actorID string) 
 
 // RotateCredential revokes every active credential for the agent and issues
 // a new one in the same transaction.
-func (s *Service) RotateCredential(ctx context.Context, agentID, actorID string) (string, domain.AgentCredential, error) {
+func (s *Service) RotateCredential(ctx context.Context, orgID, agentID, actorID string) (string, domain.AgentCredential, error) {
 	token, err := GenerateAgentToken()
 	if err != nil {
 		return "", domain.AgentCredential{}, err
 	}
 
-	cred, err := s.store.RotateAgentCredential(ctx, agentID, store.CreateAgentCredentialInput{
+	cred, err := s.store.RotateAgentCredential(ctx, orgID, agentID, store.CreateAgentCredentialInput{
+		OrgID:       orgID,
 		AgentID:     agentID,
 		TokenPrefix: TokenDisplayPrefix(token),
 		TokenHash:   HashAgentToken(token),
 		CreatedBy:   actorID,
 	}, store.AuditInput{
+		OrgID:     orgID,
 		EventType: "agent_credential_rotated",
 		ActorID:   actorID,
 		Metadata:  map[string]any{},
@@ -137,8 +145,9 @@ func (s *Service) RotateCredential(ctx context.Context, agentID, actorID string)
 }
 
 // RevokeAgent revokes the agent and all of its active credentials atomically.
-func (s *Service) RevokeAgent(ctx context.Context, agentID, actorID string) (domain.Agent, error) {
-	agent, err := s.store.RevokeAgent(ctx, agentID, store.AuditInput{
+func (s *Service) RevokeAgent(ctx context.Context, orgID, agentID, actorID string) (domain.Agent, error) {
+	agent, err := s.store.RevokeAgent(ctx, orgID, agentID, store.AuditInput{
+		OrgID:     orgID,
 		EventType: "agent_revoked",
 		ActorID:   actorID,
 		Metadata:  map[string]any{},
@@ -184,7 +193,10 @@ func (s *Service) AuthenticateAgentTokenHash(ctx context.Context, tokenHash stri
 		return AuthenticatedAgent{}, ErrCredentialRevoked
 	}
 
-	agent, err := s.store.GetAgent(ctx, cred.AgentID)
+	// Deliberately the un-org-scoped lookup: this hop is what *derives* the
+	// agent's org, so it cannot be filtered by one. Every subsequent lookup
+	// below is scoped to the org this resolves.
+	agent, err := s.store.ResolveAgentForAuth(ctx, cred.AgentID)
 	if err != nil {
 		return AuthenticatedAgent{}, fmt.Errorf("look up agent: %w", err)
 	}
@@ -192,7 +204,7 @@ func (s *Service) AuthenticateAgentTokenHash(ctx context.Context, tokenHash stri
 		return AuthenticatedAgent{}, ErrAgentRevoked
 	}
 
-	owner, err := s.store.GetUser(ctx, agent.OwnerUserID)
+	owner, err := s.store.GetUser(ctx, agent.OrgID, agent.OwnerUserID)
 	if err != nil {
 		return AuthenticatedAgent{}, fmt.Errorf("look up agent owner: %w", err)
 	}

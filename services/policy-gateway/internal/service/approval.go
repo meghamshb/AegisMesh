@@ -7,15 +7,15 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
 )
 
-func (s *EgressService) GetRequest(ctx context.Context, id string) (domain.EgressRequest, error) {
-	req, err := s.store.GetEgressRequest(ctx, id)
+func (s *EgressService) GetRequest(ctx context.Context, orgID, id string) (domain.EgressRequest, error) {
+	req, err := s.store.GetEgressRequest(ctx, orgID, id)
 	if err != nil {
 		return domain.EgressRequest{}, err
 	}
 	return req, nil
 }
 
-func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, body domain.ApproveRequestBody) (domain.EgressRequest, error) {
+func (s *EgressService) Approve(ctx context.Context, orgID, requestID, adminID string, body domain.ApproveRequestBody) (domain.EgressRequest, error) {
 	if body.Remember {
 		scope := body.Scope
 		if scope == "" {
@@ -25,7 +25,7 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 			return domain.EgressRequest{}, domain.ErrRememberScopeNotSupported{Scope: scope}
 		}
 
-		pending, err := s.store.GetEgressRequest(ctx, requestID)
+		pending, err := s.store.GetEgressRequest(ctx, orgID, requestID)
 		if err != nil {
 			return domain.EgressRequest{}, err
 		}
@@ -52,9 +52,10 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 			scopeRefID = pending.AgentID
 		}
 
-		approved, _, err := s.store.ApproveRequestWithScopedRule(ctx, requestID, adminID, scope, scopeRefID, store.OrgRuleOptions{
+		approved, _, err := s.store.ApproveRequestWithScopedRule(ctx, orgID, requestID, adminID, scope, scopeRefID, store.OrgRuleOptions{
 			ExpiresAt: body.ExpiresAt,
 		}, store.AuditInput{
+			OrgID:           orgID,
 			EgressRequestID: requestID,
 			EventType:       rememberEventType(scope),
 			ActorID:         adminID,
@@ -65,7 +66,8 @@ func (s *EgressService) Approve(ctx context.Context, requestID, adminID string, 
 		return approved, err
 	}
 
-	return s.store.ApproveRequestOnce(ctx, requestID, adminID, store.AuditInput{
+	return s.store.ApproveRequestOnce(ctx, orgID, requestID, adminID, store.AuditInput{
+		OrgID:           orgID,
 		EgressRequestID: requestID,
 		EventType:       "egress_approved_once",
 		ActorID:         adminID,
@@ -86,13 +88,14 @@ func rememberEventType(scope domain.RuleScope) string {
 	}
 }
 
-func (s *EgressService) Deny(ctx context.Context, requestID, adminID, feedback string) (domain.EgressRequest, error) {
+func (s *EgressService) Deny(ctx context.Context, orgID, requestID, adminID, feedback string) (domain.EgressRequest, error) {
 	metadata := map[string]any{}
 	if feedback != "" {
 		metadata["feedback"] = feedback
 	}
 
-	return s.store.DenyRequest(ctx, requestID, adminID, feedback, store.AuditInput{
+	return s.store.DenyRequest(ctx, orgID, requestID, adminID, feedback, store.AuditInput{
+		OrgID:           orgID,
 		EgressRequestID: requestID,
 		EventType:       "egress_denied",
 		ActorID:         adminID,
@@ -100,8 +103,9 @@ func (s *EgressService) Deny(ctx context.Context, requestID, adminID, feedback s
 	})
 }
 
-func (s *EgressService) RevokeRule(ctx context.Context, ruleID, adminID string) error {
-	return s.store.DeletePolicyRule(ctx, ruleID, store.AuditInput{
+func (s *EgressService) RevokeRule(ctx context.Context, orgID, ruleID, adminID string) error {
+	return s.store.DeletePolicyRule(ctx, orgID, ruleID, store.AuditInput{
+		OrgID:     orgID,
 		EventType: "policy_rule_revoked",
 		ActorID:   adminID,
 		Metadata: map[string]any{

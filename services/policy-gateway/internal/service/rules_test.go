@@ -158,7 +158,7 @@ func TestApproveRememberRejectsPastExpiresAt(t *testing.T) {
 		pending: domain.EgressRequest{ID: "req-expired", Method: "GET", Host: "api.github.com"},
 	}, policy.NewRuleEngine(rememberStore{}))
 
-	_, err := svc.Approve(context.Background(), "req-expired", "admin-1", domain.ApproveRequestBody{
+	_, err := svc.Approve(context.Background(), "org-1", "req-expired", "admin-1", domain.ApproveRequestBody{
 		Remember:  true,
 		Scope:     domain.RuleScopeOrg,
 		ExpiresAt: &past,

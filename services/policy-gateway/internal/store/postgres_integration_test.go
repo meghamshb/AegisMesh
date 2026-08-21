@@ -54,6 +54,7 @@ func TestApproveRequestWithScopedRuleIsAtomic(t *testing.T) {
 	}
 
 	requests, err := pg.ListRequests(ctx, store.ListRequestsInput{
+		OrgID:  seededOrgID,
 		Status: ptrStatus(domain.RequestStatusPending),
 		Host:   "integration-test.example",
 		Limit:  1,
@@ -63,7 +64,7 @@ func TestApproveRequestWithScopedRuleIsAtomic(t *testing.T) {
 	}
 
 	expires := time.Now().Add(24 * time.Hour)
-	approved, rule, err := pg.ApproveRequestWithScopedRule(ctx, requests[0].ID, "11111111-1111-1111-1111-111111111002",
+	approved, rule, err := pg.ApproveRequestWithScopedRule(ctx, seededOrgID, requests[0].ID, "11111111-1111-1111-1111-111111111002",
 		domain.RuleScopeOrg, "11111111-1111-1111-1111-111111111010", store.OrgRuleOptions{
 			ExpiresAt: &expires,
 		}, store.AuditInput{
@@ -127,6 +128,7 @@ func TestApproveRequestWithScopedRuleAgentScope(t *testing.T) {
 	}
 
 	requests, err := pg.ListRequests(ctx, store.ListRequestsInput{
+		OrgID:  seededOrgID,
 		Status: ptrStatus(domain.RequestStatusPending),
 		Host:   "agent-scope-test.example",
 		Limit:  1,
@@ -135,7 +137,7 @@ func TestApproveRequestWithScopedRuleAgentScope(t *testing.T) {
 		t.Fatalf("pending request not found: %v", err)
 	}
 
-	_, rule, err := pg.ApproveRequestWithScopedRule(ctx, requests[0].ID, seededAdminID,
+	_, rule, err := pg.ApproveRequestWithScopedRule(ctx, seededOrgID, requests[0].ID, seededAdminID,
 		domain.RuleScopeAgent, seededAgentID, store.OrgRuleOptions{}, store.AuditInput{
 			EgressRequestID: requests[0].ID,
 			EventType:       "egress_approved_agent_rule",
@@ -221,13 +223,13 @@ func TestCreatePolicyRuleConflict(t *testing.T) {
 		t.Fatalf("error = %v, want ErrRuleAlreadyExists", err)
 	}
 
-	rules, err := pg.ListRules(ctx, store.ListRulesInput{})
+	rules, err := pg.ListRules(ctx, store.ListRulesInput{OrgID: seededOrgID})
 	if err != nil {
 		t.Fatalf("ListRules: %v", err)
 	}
 	for _, rule := range rules {
 		if rule.Host == "manual-rule.example" {
-			_ = pg.DeletePolicyRule(ctx, rule.ID, store.AuditInput{
+			_ = pg.DeletePolicyRule(ctx, seededOrgID, rule.ID, store.AuditInput{
 				EventType: "policy_rule_revoked",
 				ActorID:   in.CreatedBy,
 				Metadata:  map[string]any{"rule_id": rule.ID},
@@ -321,7 +323,7 @@ func TestListUsersAndOrgFiltering(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	users, err := pg.ListUsers(ctx, store.ListUsersInput{})
+	users, err := pg.ListUsers(ctx, store.ListUsersInput{OrgID: seededOrgID})
 	if err != nil {
 		t.Fatalf("ListUsers: %v", err)
 	}
@@ -353,7 +355,7 @@ func TestGetUser(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	user, err := pg.GetUser(ctx, seededUserID)
+	user, err := pg.GetUser(ctx, seededOrgID, seededUserID)
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
@@ -369,7 +371,7 @@ func TestGetUserNotFound(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.GetUser(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := pg.GetUser(ctx, seededOrgID, "00000000-0000-0000-0000-000000000000")
 	var notFound domain.ErrNotFound
 	if !errors.As(err, &notFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
@@ -380,7 +382,7 @@ func TestListAgentsOwnerJoinAndOrgConsistency(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	agents, err := pg.ListAgents(ctx, store.ListAgentsInput{})
+	agents, err := pg.ListAgents(ctx, store.ListAgentsInput{OrgID: seededOrgID})
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -415,7 +417,7 @@ func TestListAgentsFilterByUserAndStatus(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	agents, err := pg.ListAgents(ctx, store.ListAgentsInput{UserID: seededUserID})
+	agents, err := pg.ListAgents(ctx, store.ListAgentsInput{OrgID: seededOrgID, UserID: seededUserID})
 	if err != nil {
 		t.Fatalf("ListAgents by user_id: %v", err)
 	}
@@ -425,7 +427,7 @@ func TestListAgentsFilterByUserAndStatus(t *testing.T) {
 		}
 	}
 
-	active, err := pg.ListAgents(ctx, store.ListAgentsInput{Status: "active"})
+	active, err := pg.ListAgents(ctx, store.ListAgentsInput{OrgID: seededOrgID, Status: "active"})
 	if err != nil {
 		t.Fatalf("ListAgents by status: %v", err)
 	}
@@ -440,7 +442,7 @@ func TestGetAgent(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	agent, err := pg.GetAgent(ctx, seededAgentID)
+	agent, err := pg.GetAgent(ctx, seededOrgID, seededAgentID)
 	if err != nil {
 		t.Fatalf("GetAgent: %v", err)
 	}
@@ -456,7 +458,7 @@ func TestGetAgentNotFound(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.GetAgent(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := pg.GetAgent(ctx, seededOrgID, "00000000-0000-0000-0000-000000000000")
 	var notFound domain.ErrNotFound
 	if !errors.As(err, &notFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
@@ -491,7 +493,7 @@ func TestAgentCredentialLifecycle(t *testing.T) {
 		t.Fatalf("unexpected authenticated identity: %+v", authed)
 	}
 
-	newToken, _, err := svc.RotateCredential(ctx, agent.ID, seededAdminID)
+	newToken, _, err := svc.RotateCredential(ctx, seededOrgID, agent.ID, seededAdminID)
 	if err != nil {
 		t.Fatalf("RotateCredential: %v", err)
 	}
@@ -503,7 +505,7 @@ func TestAgentCredentialLifecycle(t *testing.T) {
 		t.Fatalf("new token should authenticate: %v", err)
 	}
 
-	if _, err := svc.RevokeAgent(ctx, agent.ID, seededAdminID); err != nil {
+	if _, err := svc.RevokeAgent(ctx, seededOrgID, agent.ID, seededAdminID); err != nil {
 		t.Fatalf("RevokeAgent: %v", err)
 	}
 	if _, err := svc.AuthenticateAgentToken(ctx, newToken); !errors.Is(err, identity.ErrCredentialRevoked) {
@@ -545,7 +547,7 @@ func TestCreateAndUpdateUser(t *testing.T) {
 
 	newName := "Carol Danvers"
 	disabled := "disabled"
-	updated, err := pg.UpdateUser(ctx, created.ID, store.UpdateUserInput{
+	updated, err := pg.UpdateUser(ctx, seededOrgID, created.ID, store.UpdateUserInput{
 		DisplayName: &newName,
 		Status:      &disabled,
 	})
@@ -569,7 +571,7 @@ func TestUpdateUserNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	name := "Nobody"
-	_, err := pg.UpdateUser(ctx, "00000000-0000-0000-0000-000000000000", store.UpdateUserInput{DisplayName: &name})
+	_, err := pg.UpdateUser(ctx, seededOrgID, "00000000-0000-0000-0000-000000000000", store.UpdateUserInput{DisplayName: &name})
 	var notFound domain.ErrNotFound
 	if !errors.As(err, &notFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
@@ -591,7 +593,7 @@ func TestUpdateAgent(t *testing.T) {
 	}
 
 	newName := "renamed-agent"
-	updated, err := pg.UpdateAgent(ctx, agent.ID, store.UpdateAgentInput{
+	updated, err := pg.UpdateAgent(ctx, seededOrgID, agent.ID, store.UpdateAgentInput{
 		Name:     &newName,
 		Metadata: map[string]any{"os": "linux"},
 	})
@@ -611,7 +613,7 @@ func TestUpdateAgentNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	newName := "nobody"
-	_, err := pg.UpdateAgent(ctx, "00000000-0000-0000-0000-000000000000", store.UpdateAgentInput{Name: &newName})
+	_, err := pg.UpdateAgent(ctx, seededOrgID, "00000000-0000-0000-0000-000000000000", store.UpdateAgentInput{Name: &newName})
 	var notFound domain.ErrNotFound
 	if !errors.As(err, &notFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
@@ -622,7 +624,7 @@ func TestListUsersPagination(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	all, err := pg.ListUsers(ctx, store.ListUsersInput{Limit: 200})
+	all, err := pg.ListUsers(ctx, store.ListUsersInput{OrgID: seededOrgID, Limit: 200})
 	if err != nil {
 		t.Fatalf("ListUsers: %v", err)
 	}
@@ -630,11 +632,11 @@ func TestListUsersPagination(t *testing.T) {
 		t.Skip("not enough seeded users to exercise pagination")
 	}
 
-	firstPage, err := pg.ListUsers(ctx, store.ListUsersInput{Limit: 1, Offset: 0})
+	firstPage, err := pg.ListUsers(ctx, store.ListUsersInput{OrgID: seededOrgID, Limit: 1, Offset: 0})
 	if err != nil {
 		t.Fatalf("ListUsers page 1: %v", err)
 	}
-	secondPage, err := pg.ListUsers(ctx, store.ListUsersInput{Limit: 1, Offset: 1})
+	secondPage, err := pg.ListUsers(ctx, store.ListUsersInput{OrgID: seededOrgID, Limit: 1, Offset: 1})
 	if err != nil {
 		t.Fatalf("ListUsers page 2: %v", err)
 	}
@@ -665,7 +667,7 @@ func TestListRulesFilters(t *testing.T) {
 		t.Fatalf("CreatePolicyRule: %v", err)
 	}
 
-	denyOnly, err := pg.ListRules(ctx, store.ListRulesInput{Host: "rules-filter-test.example", Effect: "deny"})
+	denyOnly, err := pg.ListRules(ctx, store.ListRulesInput{OrgID: seededOrgID, Host: "rules-filter-test.example", Effect: "deny"})
 	if err != nil {
 		t.Fatalf("ListRules (deny filter): %v", err)
 	}
@@ -673,7 +675,7 @@ func TestListRulesFilters(t *testing.T) {
 		t.Fatalf("expected exactly 1 deny rule for host, got %d", len(denyOnly))
 	}
 
-	allowOnly, err := pg.ListRules(ctx, store.ListRulesInput{Host: "rules-filter-test.example", Effect: "allow"})
+	allowOnly, err := pg.ListRules(ctx, store.ListRulesInput{OrgID: seededOrgID, Host: "rules-filter-test.example", Effect: "allow"})
 	if err != nil {
 		t.Fatalf("ListRules (allow filter): %v", err)
 	}
@@ -686,11 +688,11 @@ func TestListAuditEventsFilters(t *testing.T) {
 	pg := newTestPostgres(t)
 	ctx := context.Background()
 
-	if err := pg.InsertAuditEvent(ctx, "", "phase56_test_event", seededAdminID, map[string]any{}); err != nil {
+	if err := pg.InsertAuditEvent(ctx, seededOrgID, "", "phase56_test_event", seededAdminID, map[string]any{}); err != nil {
 		t.Fatalf("InsertAuditEvent: %v", err)
 	}
 
-	filtered, err := pg.ListAuditEvents(ctx, store.ListAuditEventsInput{EventType: "phase56_test_event"})
+	filtered, err := pg.ListAuditEvents(ctx, store.ListAuditEventsInput{OrgID: seededOrgID, EventType: "phase56_test_event"})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -703,7 +705,7 @@ func TestListAuditEventsFilters(t *testing.T) {
 		}
 	}
 
-	unrelated, err := pg.ListAuditEvents(ctx, store.ListAuditEventsInput{EventType: "event_type_that_does_not_exist"})
+	unrelated, err := pg.ListAuditEvents(ctx, store.ListAuditEventsInput{OrgID: seededOrgID, EventType: "event_type_that_does_not_exist"})
 	if err != nil {
 		t.Fatalf("ListAuditEvents (no match): %v", err)
 	}
@@ -741,7 +743,7 @@ func TestRegisterGatewayAndAuthenticate(t *testing.T) {
 		t.Fatalf("GetGatewayByCredentialHash returned %s, want %s", byHash.ID, gw.ID)
 	}
 
-	updated, err := pg.UpdateGatewayHeartbeat(ctx, gw.ID, store.GatewayHeartbeatInput{Version: "0.1.0"})
+	updated, err := pg.UpdateGatewayHeartbeat(ctx, seededOrgID, gw.ID, store.GatewayHeartbeatInput{Version: "0.1.0"})
 	if err != nil {
 		t.Fatalf("UpdateGatewayHeartbeat: %v", err)
 	}
@@ -810,7 +812,7 @@ func TestOrgPolicyVersionIncrementsOnMutation(t *testing.T) {
 		t.Fatalf("version did not increment on rule creation: before=%d after=%d", before, afterCreate)
 	}
 
-	if err := pg.DeletePolicyRule(ctx, rule.ID, store.AuditInput{
+	if err := pg.DeletePolicyRule(ctx, seededOrgID, rule.ID, store.AuditInput{
 		EventType: "policy_rule_revoked", ActorID: seededAdminID, Metadata: map[string]any{"rule_id": rule.ID},
 	}); err != nil {
 		t.Fatalf("DeletePolicyRule: %v", err)

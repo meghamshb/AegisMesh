@@ -65,6 +65,7 @@ func (e *RuleEngine) Evaluate(ctx context.Context, req Request) (Evaluation, err
 	}
 
 	match := store.ApprovalMatchInput{
+		OrgID:   req.OrgID,
 		AgentID: req.AgentID,
 		Host:    req.Host,
 		Port:    req.Port,

@@ -9,9 +9,11 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/identity"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
+	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store/storetest"
 )
 
 type fakeStore struct {
+	storetest.Stub
 	agents      map[string]domain.Agent
 	credentials map[string]domain.AgentCredential // keyed by token hash
 	orgStatus   string                            // empty means "active"
@@ -43,9 +45,9 @@ func (f *fakeStore) RegisterAgent(_ context.Context, in store.RegisterAgentInput
 	return agent, nil
 }
 
-func (f *fakeStore) RevokeAgent(_ context.Context, agentID string, _ store.AuditInput) (domain.Agent, error) {
+func (f *fakeStore) RevokeAgent(_ context.Context, orgID, agentID string, _ store.AuditInput) (domain.Agent, error) {
 	agent, ok := f.agents[agentID]
-	if !ok {
+	if !ok || agent.OrgID != orgID {
 		return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: agentID}
 	}
 	agent.Status = "revoked"
@@ -59,7 +61,17 @@ func (f *fakeStore) RevokeAgent(_ context.Context, agentID string, _ store.Audit
 	return agent, nil
 }
 
-func (f *fakeStore) GetAgent(_ context.Context, id string) (domain.Agent, error) {
+func (f *fakeStore) GetAgent(_ context.Context, orgID, id string) (domain.Agent, error) {
+	agent, ok := f.agents[id]
+	if !ok || agent.OrgID != orgID {
+		return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
+	}
+	return agent, nil
+}
+
+// ResolveAgentForAuth is the deliberately un-org-scoped variant used inside
+// authentication, mirroring the real store.
+func (f *fakeStore) ResolveAgentForAuth(_ context.Context, id string) (domain.Agent, error) {
 	agent, ok := f.agents[id]
 	if !ok {
 		return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
@@ -79,7 +91,10 @@ func (f *fakeStore) CreateAgentCredential(_ context.Context, in store.CreateAgen
 	return cred, nil
 }
 
-func (f *fakeStore) RotateAgentCredential(_ context.Context, agentID string, in store.CreateAgentCredentialInput, _ store.AuditInput) (domain.AgentCredential, error) {
+func (f *fakeStore) RotateAgentCredential(_ context.Context, orgID, agentID string, in store.CreateAgentCredentialInput, _ store.AuditInput) (domain.AgentCredential, error) {
+	if agent, ok := f.agents[agentID]; !ok || agent.OrgID != orgID {
+		return domain.AgentCredential{}, domain.ErrNotFound{Resource: "agent", ID: agentID}
+	}
 	for hash, cred := range f.credentials {
 		if cred.AgentID == agentID && cred.Status == "active" {
 			cred.Status = "revoked"
@@ -113,25 +128,12 @@ func (f *fakeStore) TouchAgentLastSeen(_ context.Context, _ string) error {
 	return nil
 }
 
-func (f *fakeStore) GetUser(_ context.Context, id string) (domain.User, error) {
+func (f *fakeStore) GetUser(_ context.Context, orgID, id string) (domain.User, error) {
 	status := f.ownerStatus
 	if status == "" {
 		status = "active"
 	}
-	return domain.User{ID: id, Status: status}, nil
-}
-
-func (f *fakeStore) RegisterGateway(_ context.Context, in store.RegisterGatewayInput) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (f *fakeStore) GetGateway(_ context.Context, id string) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (f *fakeStore) GetGatewayByCredentialHash(_ context.Context, hash string) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
-}
-func (f *fakeStore) UpdateGatewayHeartbeat(_ context.Context, id string, _ store.GatewayHeartbeatInput) (domain.Gateway, error) {
-	return domain.Gateway{}, nil
+	return domain.User{ID: id, OrgID: orgID, Status: status}, nil
 }
 
 func (f *fakeStore) GetOrganization(_ context.Context, id string) (domain.Organization, error) {
@@ -204,7 +206,7 @@ func TestRotateCredentialRejectsOldAcceptsNew(t *testing.T) {
 		t.Fatalf("RegisterAgent() error = %v", err)
 	}
 
-	newToken, _, err := svc.RotateCredential(context.Background(), agent.ID, "admin-1")
+	newToken, _, err := svc.RotateCredential(context.Background(), agent.OrgID, agent.ID, "admin-1")
 	if err != nil {
 		t.Fatalf("RotateCredential() error = %v", err)
 	}
@@ -228,7 +230,7 @@ func TestRevokeAgentRejectsNewToken(t *testing.T) {
 		t.Fatalf("RegisterAgent() error = %v", err)
 	}
 
-	if _, err := svc.RevokeAgent(context.Background(), agent.ID, "admin-1"); err != nil {
+	if _, err := svc.RevokeAgent(context.Background(), agent.OrgID, agent.ID, "admin-1"); err != nil {
 		t.Fatalf("RevokeAgent() error = %v", err)
 	}
 

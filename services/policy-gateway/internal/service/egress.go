@@ -31,8 +31,9 @@ type ListRequestsOptions struct {
 	Offset  int
 }
 
-func (s *EgressService) ListRequests(ctx context.Context, opts ListRequestsOptions) ([]domain.EgressRequest, error) {
+func (s *EgressService) ListRequests(ctx context.Context, orgID string, opts ListRequestsOptions) ([]domain.EgressRequest, error) {
 	in := store.ListRequestsInput{
+		OrgID:   orgID,
 		Host:    opts.Host,
 		UserID:  opts.UserID,
 		AgentID: opts.AgentID,
@@ -67,8 +68,9 @@ type ListRulesOptions struct {
 	Offset     int
 }
 
-func (s *EgressService) ListRules(ctx context.Context, opts ListRulesOptions) ([]domain.PolicyRule, error) {
+func (s *EgressService) ListRules(ctx context.Context, orgID string, opts ListRulesOptions) ([]domain.PolicyRule, error) {
 	return s.store.ListRules(ctx, store.ListRulesInput{
+		OrgID:      orgID,
 		Scope:      opts.Scope,
 		ScopeRefID: opts.ScopeRefID,
 		Effect:     opts.Effect,
@@ -88,8 +90,9 @@ type ListAuditEventsOptions struct {
 	Offset    int
 }
 
-func (s *EgressService) ListAuditEvents(ctx context.Context, opts ListAuditEventsOptions) ([]domain.AuditEvent, error) {
+func (s *EgressService) ListAuditEvents(ctx context.Context, orgID string, opts ListAuditEventsOptions) ([]domain.AuditEvent, error) {
 	return s.store.ListAuditEvents(ctx, store.ListAuditEventsInput{
+		OrgID:     orgID,
 		EventType: opts.EventType,
 		ActorID:   opts.ActorID,
 		From:      opts.From,
@@ -135,7 +138,7 @@ func (s *EgressService) RecordOutbound(
 	}
 
 	if eval.ApprovalGrantID != nil {
-		if err := s.store.MarkApprovalConsumed(ctx, *eval.ApprovalGrantID); err != nil {
+		if err := s.store.MarkApprovalConsumed(ctx, identity.OrgID, *eval.ApprovalGrantID); err != nil {
 			return "", domain.EgressRequest{}, fmt.Errorf("consume one-time approval: %w", err)
 		}
 	}
@@ -145,7 +148,7 @@ func (s *EgressService) RecordOutbound(
 	if eval.ApprovalGrantID != nil {
 		actorID = ""
 	}
-	if err := s.store.InsertAuditEvent(ctx, created.ID, eventType, actorID, map[string]any{
+	if err := s.store.InsertAuditEvent(ctx, identity.OrgID, created.ID, eventType, actorID, map[string]any{
 		"host":              req.Host,
 		"port":              req.Port,
 		"method":            req.Method,
