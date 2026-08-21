@@ -48,18 +48,17 @@ func (p *Postgres) ListRequests(ctx context.Context, in ListRequestsInput) ([]do
 		  AND ($2 = '' OR host ILIKE '%' || $2 || '%')
 		  AND ($3 = '' OR user_id::text = $3)
 		  AND ($4 = '' OR agent_id::text = $4)
+		  AND ($5::timestamptz IS NULL OR requested_at >= $5)
+		  AND ($6::timestamptz IS NULL OR requested_at <= $6)
 		ORDER BY requested_at DESC
-		LIMIT $5
+		LIMIT $7 OFFSET $8
 	`
 	status := ""
 	if in.Status != nil {
 		status = string(*in.Status)
 	}
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := p.pool.Query(ctx, baseQuery, status, in.Host, in.UserID, in.AgentID, limit)
+	limit, offset := normalizePage(in.Limit, in.Offset)
+	rows, err := p.pool.Query(ctx, baseQuery, status, in.Host, in.UserID, in.AgentID, in.From, in.To, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query egress requests: %w", err)
 	}
@@ -68,7 +67,27 @@ func (p *Postgres) ListRequests(ctx context.Context, in ListRequestsInput) ([]do
 	return scanEgressRequests(rows)
 }
 
-func (p *Postgres) ListRules(ctx context.Context) ([]domain.PolicyRule, error) {
+// normalizePage applies the default/max limit and floors offset, shared by
+// every paginated list endpoint (users, agents, rules, requests, audit).
+func normalizePage(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+func (p *Postgres) ListRules(ctx context.Context, in ListRulesInput) ([]domain.PolicyRule, error) {
+	limit, offset := normalizePage(in.Limit, in.Offset)
+	var active *bool
+	if in.Active != nil {
+		active = in.Active
+	}
 	rows, err := p.pool.Query(ctx, `
 		SELECT r.id, r.org_id, r.scope, r.scope_ref_id, r.effect, r.host, r.port, r.method,
 		       r.path_prefix, r.created_at, r.created_by, r.expires_at,
@@ -84,8 +103,18 @@ func (p *Postgres) ListRules(ctx context.Context) ([]domain.PolicyRule, error) {
 		LEFT JOIN actors u ON r.scope = 'user' AND u.id = r.scope_ref_id
 		LEFT JOIN agents ag ON r.scope = 'agent' AND ag.id = r.scope_ref_id
 		LEFT JOIN actors creator ON creator.id = r.created_by
+		WHERE ($1 = '' OR r.scope = $1)
+		  AND ($2 = '' OR r.scope_ref_id::text = $2)
+		  AND ($3 = '' OR r.effect = $3)
+		  AND ($4 = '' OR r.host ILIKE '%' || $4 || '%')
+		  AND (
+		    $5::boolean IS NULL
+		    OR ($5 IS TRUE AND (r.expires_at IS NULL OR r.expires_at > NOW()))
+		    OR ($5 IS FALSE AND r.expires_at IS NOT NULL AND r.expires_at <= NOW())
+		  )
 		ORDER BY r.created_at DESC
-	`)
+		LIMIT $6 OFFSET $7
+	`, in.Scope, in.ScopeRefID, in.Effect, in.Host, active, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query policy rules: %w", err)
 	}
@@ -132,13 +161,18 @@ func (p *Postgres) ListRules(ctx context.Context) ([]domain.PolicyRule, error) {
 	return rules, nil
 }
 
-func (p *Postgres) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error) {
+func (p *Postgres) ListAuditEvents(ctx context.Context, in ListAuditEventsInput) ([]domain.AuditEvent, error) {
+	limit, offset := normalizePage(in.Limit, in.Offset)
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, egress_request_id, event_type, actor_id, metadata_json, created_at
 		FROM audit_events
+		WHERE ($1 = '' OR event_type = $1)
+		  AND ($2 = '' OR actor_id::text = $2)
+		  AND ($3::timestamptz IS NULL OR created_at >= $3)
+		  AND ($4::timestamptz IS NULL OR created_at <= $4)
 		ORDER BY created_at DESC
-		LIMIT 100
-	`)
+		LIMIT $5 OFFSET $6
+	`, in.EventType, in.ActorID, in.From, in.To, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query audit events: %w", err)
 	}
@@ -678,13 +712,15 @@ func (p *Postgres) GetOrganization(ctx context.Context, id string) (domain.Organ
 }
 
 func (p *Postgres) ListUsers(ctx context.Context, in ListUsersInput) ([]domain.User, error) {
+	limit, offset := normalizePage(in.Limit, in.Offset)
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, org_id, display_name, email, role, status, external_subject, created_at, updated_at
 		FROM actors
 		WHERE type != 'agent'
 		  AND ($1 = '' OR status = $1)
 		ORDER BY created_at ASC
-	`, in.Status)
+		LIMIT $2 OFFSET $3
+	`, in.Status, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query users: %w", err)
 	}
@@ -721,6 +757,49 @@ func (p *Postgres) GetUser(ctx context.Context, id string) (domain.User, error) 
 	return user, nil
 }
 
+func (p *Postgres) CreateUser(ctx context.Context, in CreateUserInput) (domain.User, error) {
+	row := p.pool.QueryRow(ctx, `
+		INSERT INTO actors (type, org_id, display_name, email, role)
+		VALUES ('user', $1, $2, NULLIF($3, ''), $4)
+		RETURNING id, org_id, display_name, email, role, status, external_subject, created_at, updated_at
+	`, in.OrgID, in.DisplayName, derefString(in.Email), in.Role)
+
+	user, err := scanUserRow(row)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("create user: %w", err)
+	}
+	return user, nil
+}
+
+func (p *Postgres) UpdateUser(ctx context.Context, id string, in UpdateUserInput) (domain.User, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE actors
+		SET display_name = COALESCE($2, display_name),
+		    email = CASE WHEN $3::boolean THEN NULLIF($4, '') ELSE email END,
+		    role = COALESCE($5, role),
+		    status = COALESCE($6, status),
+		    updated_at = NOW()
+		WHERE id = $1 AND type != 'agent'
+		RETURNING id, org_id, display_name, email, role, status, external_subject, created_at, updated_at
+	`, id, in.DisplayName, in.Email != nil, derefString(in.Email), in.Role, in.Status)
+
+	user, err := scanUserRow(row)
+	if err != nil {
+		if isNoRows(err) {
+			return domain.User{}, domain.ErrNotFound{Resource: "user", ID: id}
+		}
+		return domain.User{}, fmt.Errorf("update user: %w", err)
+	}
+	return user, nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func scanUserRow(row pgxRow) (domain.User, error) {
 	var user domain.User
 	if err := row.Scan(
@@ -740,6 +819,7 @@ func scanUserRow(row pgxRow) (domain.User, error) {
 }
 
 func (p *Postgres) ListAgents(ctx context.Context, in ListAgentsInput) ([]domain.Agent, error) {
+	limit, offset := normalizePage(in.Limit, in.Offset)
 	rows, err := p.pool.Query(ctx, `
 		SELECT ag.id, ag.org_id, ag.actor_id, COALESCE(owner.display_name, ''), ag.name, ag.container_id,
 		       ag.status, ag.last_seen_at, ag.revoked_at, ag.metadata_json, ag.created_at, ag.updated_at
@@ -748,7 +828,8 @@ func (p *Postgres) ListAgents(ctx context.Context, in ListAgentsInput) ([]domain
 		WHERE ($1 = '' OR ag.actor_id::text = $1)
 		  AND ($2 = '' OR ag.status = $2)
 		ORDER BY ag.created_at ASC
-	`, in.UserID, in.Status)
+		LIMIT $3 OFFSET $4
+	`, in.UserID, in.Status, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query agents: %w", err)
 	}
@@ -785,6 +866,39 @@ func (p *Postgres) GetAgent(ctx context.Context, id string) (domain.Agent, error
 		return domain.Agent{}, fmt.Errorf("get agent: %w", err)
 	}
 	return agent, nil
+}
+
+func (p *Postgres) UpdateAgent(ctx context.Context, id string, in UpdateAgentInput) (domain.Agent, error) {
+	// Always bind valid JSON for $6, even when unused (hasMetadata false):
+	// Postgres validates a ::jsonb cast at parameter-bind time regardless of
+	// which CASE branch ends up selected at row-evaluation time, so an empty
+	// string here would fail the cast even though that branch is never taken.
+	metadataJSON := []byte("null")
+	hasMetadata := in.Metadata != nil
+	if hasMetadata {
+		marshaled, err := json.Marshal(in.Metadata)
+		if err != nil {
+			return domain.Agent{}, fmt.Errorf("marshal agent metadata: %w", err)
+		}
+		metadataJSON = marshaled
+	}
+
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE agents
+		SET name = COALESCE($2, name),
+		    container_id = CASE WHEN $3::boolean THEN $4 ELSE container_id END,
+		    metadata_json = CASE WHEN $5::boolean THEN $6::jsonb ELSE metadata_json END,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, id, in.Name, in.ContainerID != nil, in.ContainerID, hasMetadata, string(metadataJSON))
+	if err != nil {
+		return domain.Agent{}, fmt.Errorf("update agent: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
+	}
+
+	return p.GetAgent(ctx, id)
 }
 
 func scanAgentRow(row pgxRow) (domain.Agent, error) {

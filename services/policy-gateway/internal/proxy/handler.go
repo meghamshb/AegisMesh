@@ -220,7 +220,7 @@ func (h *Handler) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, identity.ErrInvalidToken), errors.Is(err, identity.ErrCredentialRevoked):
 		w.Header().Set("Proxy-Authenticate", `Bearer realm="clearance-gateway"`)
 		writeJSON(w, http.StatusProxyAuthRequired, map[string]string{"error": "valid agent credential required"})
-	case errors.Is(err, identity.ErrAgentRevoked), errors.Is(err, identity.ErrOrgSuspended):
+	case errors.Is(err, identity.ErrAgentRevoked), errors.Is(err, identity.ErrOrgSuspended), errors.Is(err, identity.ErrOwnerDisabled):
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 	default:
 		h.logger.Error("resolve proxy identity", "error", err)

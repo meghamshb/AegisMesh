@@ -221,7 +221,7 @@ func TestCreatePolicyRuleConflict(t *testing.T) {
 		t.Fatalf("error = %v, want ErrRuleAlreadyExists", err)
 	}
 
-	rules, err := pg.ListRules(ctx)
+	rules, err := pg.ListRules(ctx, store.ListRulesInput{})
 	if err != nil {
 		t.Fatalf("ListRules: %v", err)
 	}
@@ -519,5 +519,195 @@ func TestGetAgentCredentialByHashNotFound(t *testing.T) {
 	var notFound domain.ErrNotFound
 	if !errors.As(err, &notFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCreateAndUpdateUser(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	email := "carol@example.com"
+	created, err := pg.CreateUser(ctx, store.CreateUserInput{
+		OrgID:       seededOrgID,
+		DisplayName: "Carol",
+		Email:       &email,
+		Role:        "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if created.DisplayName != "Carol" || created.Role != "member" || created.Status != "active" {
+		t.Fatalf("unexpected created user: %+v", created)
+	}
+	if created.Email == nil || *created.Email != email {
+		t.Fatalf("email = %v, want %s", created.Email, email)
+	}
+
+	newName := "Carol Danvers"
+	disabled := "disabled"
+	updated, err := pg.UpdateUser(ctx, created.ID, store.UpdateUserInput{
+		DisplayName: &newName,
+		Status:      &disabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	if updated.DisplayName != "Carol Danvers" {
+		t.Fatalf("display_name = %q, want Carol Danvers", updated.DisplayName)
+	}
+	if updated.Status != "disabled" {
+		t.Fatalf("status = %q, want disabled", updated.Status)
+	}
+	// Fields not included in the update must be left untouched.
+	if updated.Role != "member" {
+		t.Fatalf("role = %q, want unchanged member", updated.Role)
+	}
+}
+
+func TestUpdateUserNotFound(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	name := "Nobody"
+	_, err := pg.UpdateUser(ctx, "00000000-0000-0000-0000-000000000000", store.UpdateUserInput{DisplayName: &name})
+	var notFound domain.ErrNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateAgent(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	svc := identity.NewService(pg)
+	agent, _, _, err := svc.RegisterAgent(ctx, identity.RegisterAgentInput{
+		OrgID:       seededOrgID,
+		OwnerUserID: seededUserID,
+		Name:        "update-agent-test",
+	}, seededAdminID)
+	if err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+
+	newName := "renamed-agent"
+	updated, err := pg.UpdateAgent(ctx, agent.ID, store.UpdateAgentInput{
+		Name:     &newName,
+		Metadata: map[string]any{"os": "linux"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateAgent: %v", err)
+	}
+	if updated.Name != "renamed-agent" {
+		t.Fatalf("name = %q, want renamed-agent", updated.Name)
+	}
+	if updated.Metadata["os"] != "linux" {
+		t.Fatalf("metadata = %+v, want os=linux", updated.Metadata)
+	}
+}
+
+func TestUpdateAgentNotFound(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	newName := "nobody"
+	_, err := pg.UpdateAgent(ctx, "00000000-0000-0000-0000-000000000000", store.UpdateAgentInput{Name: &newName})
+	var notFound domain.ErrNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListUsersPagination(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	all, err := pg.ListUsers(ctx, store.ListUsersInput{Limit: 200})
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(all) < 2 {
+		t.Skip("not enough seeded users to exercise pagination")
+	}
+
+	firstPage, err := pg.ListUsers(ctx, store.ListUsersInput{Limit: 1, Offset: 0})
+	if err != nil {
+		t.Fatalf("ListUsers page 1: %v", err)
+	}
+	secondPage, err := pg.ListUsers(ctx, store.ListUsersInput{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("ListUsers page 2: %v", err)
+	}
+	if len(firstPage) != 1 || len(secondPage) != 1 {
+		t.Fatalf("expected 1 item per page, got %d and %d", len(firstPage), len(secondPage))
+	}
+	if firstPage[0].ID == secondPage[0].ID {
+		t.Fatal("expected pagination offset to return different items")
+	}
+}
+
+func TestListRulesFilters(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.CreatePolicyRule(ctx, store.CreatePolicyRuleInput{
+		OrgID:      seededOrgID,
+		Scope:      domain.RuleScopeOrg,
+		ScopeRefID: seededOrgID,
+		Effect:     domain.RuleEffectDeny,
+		Host:       "rules-filter-test.example",
+		Port:       443,
+		Method:     "GET",
+		PathPrefix: "/",
+		CreatedBy:  seededAdminID,
+	}, store.AuditInput{EventType: "policy_rule_created", ActorID: seededAdminID, Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreatePolicyRule: %v", err)
+	}
+
+	denyOnly, err := pg.ListRules(ctx, store.ListRulesInput{Host: "rules-filter-test.example", Effect: "deny"})
+	if err != nil {
+		t.Fatalf("ListRules (deny filter): %v", err)
+	}
+	if len(denyOnly) != 1 {
+		t.Fatalf("expected exactly 1 deny rule for host, got %d", len(denyOnly))
+	}
+
+	allowOnly, err := pg.ListRules(ctx, store.ListRulesInput{Host: "rules-filter-test.example", Effect: "allow"})
+	if err != nil {
+		t.Fatalf("ListRules (allow filter): %v", err)
+	}
+	if len(allowOnly) != 0 {
+		t.Fatalf("expected 0 allow rules for host, got %d", len(allowOnly))
+	}
+}
+
+func TestListAuditEventsFilters(t *testing.T) {
+	pg := newTestPostgres(t)
+	ctx := context.Background()
+
+	if err := pg.InsertAuditEvent(ctx, "", "phase56_test_event", seededAdminID, map[string]any{}); err != nil {
+		t.Fatalf("InsertAuditEvent: %v", err)
+	}
+
+	filtered, err := pg.ListAuditEvents(ctx, store.ListAuditEventsInput{EventType: "phase56_test_event"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(filtered) == 0 {
+		t.Fatal("expected at least one matching audit event")
+	}
+	for _, e := range filtered {
+		if e.EventType != "phase56_test_event" {
+			t.Fatalf("unexpected event_type in filtered results: %q", e.EventType)
+		}
+	}
+
+	unrelated, err := pg.ListAuditEvents(ctx, store.ListAuditEventsInput{EventType: "event_type_that_does_not_exist"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents (no match): %v", err)
+	}
+	if len(unrelated) != 0 {
+		t.Fatalf("expected 0 events for unknown event_type, got %d", len(unrelated))
 	}
 }

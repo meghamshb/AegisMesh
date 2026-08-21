@@ -15,6 +15,7 @@ type fakeStore struct {
 	agents      map[string]domain.Agent
 	credentials map[string]domain.AgentCredential // keyed by token hash
 	orgStatus   string                            // empty means "active"
+	ownerStatus string                            // empty means "active"
 	nextID      int
 }
 
@@ -110,6 +111,14 @@ func (f *fakeStore) TouchAgentCredentialLastUsed(_ context.Context, _ string) er
 
 func (f *fakeStore) TouchAgentLastSeen(_ context.Context, _ string) error {
 	return nil
+}
+
+func (f *fakeStore) GetUser(_ context.Context, id string) (domain.User, error) {
+	status := f.ownerStatus
+	if status == "" {
+		status = "active"
+	}
+	return domain.User{ID: id, Status: status}, nil
 }
 
 func (f *fakeStore) GetOrganization(_ context.Context, id string) (domain.Organization, error) {
@@ -230,5 +239,26 @@ func TestAuthenticateAgentTokenOrgSuspended(t *testing.T) {
 
 	if _, err := svc.AuthenticateAgentToken(context.Background(), token); !errors.Is(err, identity.ErrOrgSuspended) {
 		t.Fatalf("error = %v, want ErrOrgSuspended", err)
+	}
+}
+
+func TestAuthenticateAgentTokenOwnerDisabled(t *testing.T) {
+	st := newFakeStore()
+	svc := identity.NewService(st)
+
+	_, token, _, err := svc.RegisterAgent(context.Background(), identity.RegisterAgentInput{
+		OrgID: "org-1", OwnerUserID: "user-1", Name: "agent-a",
+	}, "admin-1")
+	if err != nil {
+		t.Fatalf("RegisterAgent() error = %v", err)
+	}
+
+	// Disabling the owning human user must cascade: their agent's credential
+	// stops authenticating even though the credential and agent themselves
+	// were never individually revoked (Phase 5.6.3).
+	st.ownerStatus = "disabled"
+
+	if _, err := svc.AuthenticateAgentToken(context.Background(), token); !errors.Is(err, identity.ErrOwnerDisabled) {
+		t.Fatalf("error = %v, want ErrOwnerDisabled", err)
 	}
 }

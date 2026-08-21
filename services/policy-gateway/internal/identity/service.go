@@ -19,6 +19,9 @@ var (
 	// ErrOrgSuspended means the agent and credential are active but the
 	// owning organization is not.
 	ErrOrgSuspended = errors.New("organization suspended")
+	// ErrOwnerDisabled means the agent and credential are active but the
+	// human user who owns the agent has been disabled.
+	ErrOwnerDisabled = errors.New("agent owner disabled")
 )
 
 // Store is the subset of store.Store the identity package depends on.
@@ -33,6 +36,7 @@ type Store interface {
 	TouchAgentCredentialLastUsed(ctx context.Context, credentialID string) error
 	TouchAgentLastSeen(ctx context.Context, agentID string) error
 	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
+	GetUser(ctx context.Context, id string) (domain.User, error)
 }
 
 // Service owns agent registration and the agent credential lifecycle:
@@ -173,6 +177,14 @@ func (s *Service) AuthenticateAgentToken(ctx context.Context, token string) (Aut
 	}
 	if agent.Status != "active" {
 		return AuthenticatedAgent{}, ErrAgentRevoked
+	}
+
+	owner, err := s.store.GetUser(ctx, agent.OwnerUserID)
+	if err != nil {
+		return AuthenticatedAgent{}, fmt.Errorf("look up agent owner: %w", err)
+	}
+	if owner.Status != "active" {
+		return AuthenticatedAgent{}, ErrOwnerDisabled
 	}
 
 	org, err := s.store.GetOrganization(ctx, agent.OrgID)

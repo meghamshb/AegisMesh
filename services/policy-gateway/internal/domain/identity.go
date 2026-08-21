@@ -39,6 +39,25 @@ type Agent struct {
 	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
+type CreateUserBody struct {
+	DisplayName string  `json:"display_name"`
+	Email       *string `json:"email,omitempty"`
+	Role        string  `json:"role,omitempty"`
+}
+
+type UpdateUserBody struct {
+	DisplayName *string `json:"display_name,omitempty"`
+	Email       *string `json:"email,omitempty"`
+	Role        *string `json:"role,omitempty"`
+	Status      *string `json:"status,omitempty"`
+}
+
+type UpdateAgentBody struct {
+	Name        *string        `json:"name,omitempty"`
+	ContainerID *string        `json:"container_id,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
 type RegisterAgentBody struct {
 	OwnerUserID string         `json:"owner_user_id"`
 	Name        string         `json:"name"`

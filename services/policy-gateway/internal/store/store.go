@@ -43,7 +43,10 @@ type ListRequestsInput struct {
 	Host    string
 	UserID  string
 	AgentID string
+	From    *time.Time
+	To      *time.Time
 	Limit   int
+	Offset  int
 }
 
 type AuditInput struct {
@@ -72,11 +75,54 @@ type OrgRuleOptions struct {
 
 type ListUsersInput struct {
 	Status string
+	Limit  int
+	Offset int
 }
 
 type ListAgentsInput struct {
 	UserID string
 	Status string
+	Limit  int
+	Offset int
+}
+
+type ListRulesInput struct {
+	Scope      string
+	ScopeRefID string
+	Effect     string
+	Host       string
+	Active     *bool
+	Limit      int
+	Offset     int
+}
+
+type ListAuditEventsInput struct {
+	EventType string
+	ActorID   string
+	From      *time.Time
+	To        *time.Time
+	Limit     int
+	Offset    int
+}
+
+type CreateUserInput struct {
+	OrgID       string
+	DisplayName string
+	Email       *string
+	Role        string
+}
+
+type UpdateUserInput struct {
+	DisplayName *string
+	Email       *string
+	Role        *string
+	Status      *string
+}
+
+type UpdateAgentInput struct {
+	Name        *string
+	ContainerID *string
+	Metadata    map[string]any
 }
 
 type RegisterAgentInput struct {
@@ -97,8 +143,8 @@ type CreateAgentCredentialInput struct {
 type Store interface {
 	Ping(ctx context.Context) error
 	ListRequests(ctx context.Context, in ListRequestsInput) ([]domain.EgressRequest, error)
-	ListRules(ctx context.Context) ([]domain.PolicyRule, error)
-	ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error)
+	ListRules(ctx context.Context, in ListRulesInput) ([]domain.PolicyRule, error)
+	ListAuditEvents(ctx context.Context, in ListAuditEventsInput) ([]domain.AuditEvent, error)
 	MatchRules(ctx context.Context, in MatchRulesInput) ([]domain.PolicyRule, error)
 	CreateEgressRequest(ctx context.Context, in CreateEgressRequestInput) (domain.EgressRequest, error)
 	InsertAuditEvent(ctx context.Context, egressRequestID, eventType, actorID string, metadata map[string]any) error
@@ -114,8 +160,11 @@ type Store interface {
 	GetOrganization(ctx context.Context, id string) (domain.Organization, error)
 	ListUsers(ctx context.Context, in ListUsersInput) ([]domain.User, error)
 	GetUser(ctx context.Context, id string) (domain.User, error)
+	CreateUser(ctx context.Context, in CreateUserInput) (domain.User, error)
+	UpdateUser(ctx context.Context, id string, in UpdateUserInput) (domain.User, error)
 	ListAgents(ctx context.Context, in ListAgentsInput) ([]domain.Agent, error)
 	GetAgent(ctx context.Context, id string) (domain.Agent, error)
+	UpdateAgent(ctx context.Context, id string, in UpdateAgentInput) (domain.Agent, error)
 	RegisterAgent(ctx context.Context, in RegisterAgentInput, audit AuditInput) (domain.Agent, error)
 	RevokeAgent(ctx context.Context, agentID string, audit AuditInput) (domain.Agent, error)
 	CreateAgentCredential(ctx context.Context, in CreateAgentCredentialInput, audit AuditInput) (domain.AgentCredential, error)

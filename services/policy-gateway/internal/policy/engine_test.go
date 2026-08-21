@@ -19,8 +19,12 @@ func (s stubStore) Ping(context.Context) error { return nil }
 func (s stubStore) ListRequests(context.Context, store.ListRequestsInput) ([]domain.EgressRequest, error) {
 	return nil, nil
 }
-func (s stubStore) ListRules(context.Context) ([]domain.PolicyRule, error)       { return s.rules, nil }
-func (s stubStore) ListAuditEvents(context.Context) ([]domain.AuditEvent, error) { return nil, nil }
+func (s stubStore) ListRules(context.Context, store.ListRulesInput) ([]domain.PolicyRule, error) {
+	return s.rules, nil
+}
+func (s stubStore) ListAuditEvents(context.Context, store.ListAuditEventsInput) ([]domain.AuditEvent, error) {
+	return nil, nil
+}
 func (s stubStore) MatchRules(_ context.Context, _ store.MatchRulesInput) ([]domain.PolicyRule, error) {
 	return s.rules, nil
 }
@@ -84,6 +88,15 @@ func (s stubStore) GetAgentCredentialByHash(context.Context, string) (domain.Age
 }
 func (s stubStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 func (s stubStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
+func (s stubStore) CreateUser(context.Context, store.CreateUserInput) (domain.User, error) {
+	return domain.User{}, nil
+}
+func (s stubStore) UpdateUser(context.Context, string, store.UpdateUserInput) (domain.User, error) {
+	return domain.User{}, nil
+}
+func (s stubStore) UpdateAgent(context.Context, string, store.UpdateAgentInput) (domain.Agent, error) {
+	return domain.Agent{}, nil
+}
 
 func TestEvaluatePendingWhenNoRules(t *testing.T) {
 	engine := policy.NewRuleEngine(stubStore{})

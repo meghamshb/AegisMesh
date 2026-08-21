@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -58,9 +59,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/rules/{id}", s.handleDeleteRule)
 	s.mux.HandleFunc("GET /api/v1/organizations/current", s.handleGetCurrentOrganization)
 	s.mux.HandleFunc("GET /api/v1/users", s.handleListUsers)
+	s.mux.HandleFunc("POST /api/v1/users", s.handleCreateUser)
 	s.mux.HandleFunc("GET /api/v1/users/{id}", s.handleGetUser)
+	s.mux.HandleFunc("PATCH /api/v1/users/{id}", s.handleUpdateUser)
 	s.mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /api/v1/agents/{id}", s.handleGetAgent)
+	s.mux.HandleFunc("PATCH /api/v1/agents/{id}", s.handleUpdateAgent)
 	s.mux.HandleFunc("POST /api/v1/agents", s.handleRegisterAgent)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/credentials/rotate", s.handleRotateAgentCredential)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/revoke", s.handleRevokeAgent)
@@ -107,17 +111,20 @@ func (s *Server) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	}
 
 	statusFilter := domain.RequestStatus(strings.TrimSpace(r.URL.Query().Get("status")))
-	limit := 100
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			s.writeError(w, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		if parsed > 500 {
-			parsed = 500
-		}
-		limit = parsed
+	limit, offset, err := paginationParams(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	from, err := parseTimeParam(r, "from")
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	to, err := parseTimeParam(r, "to")
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -128,7 +135,10 @@ func (s *Server) handleListRequests(w http.ResponseWriter, r *http.Request) {
 		Host:    strings.TrimSpace(r.URL.Query().Get("host")),
 		UserID:  strings.TrimSpace(r.URL.Query().Get("user_id")),
 		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+		From:    from,
+		To:      to,
 		Limit:   limit,
+		Offset:  offset,
 	})
 	if err != nil {
 		var invalid domain.InvalidEnumError
@@ -141,7 +151,7 @@ func (s *Server) handleListRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": requests})
+	s.writePaginated(w, requests, len(requests), limit, offset)
 }
 
 func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
@@ -267,34 +277,81 @@ func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeAdmin(w, r) {
 		return
 	}
+	limit, offset, err := paginationParams(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var active *bool
+	if raw := strings.TrimSpace(r.URL.Query().Get("active")); raw != "" {
+		parsed, convErr := strconv.ParseBool(raw)
+		if convErr != nil {
+			s.writeError(w, http.StatusBadRequest, "active must be true or false")
+			return
+		}
+		active = &parsed
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rules, err := s.egress.ListRules(ctx)
+	rules, err := s.egress.ListRules(ctx, service.ListRulesOptions{
+		Scope:      strings.TrimSpace(r.URL.Query().Get("scope")),
+		ScopeRefID: strings.TrimSpace(r.URL.Query().Get("scope_ref_id")),
+		Effect:     strings.TrimSpace(r.URL.Query().Get("effect")),
+		Host:       strings.TrimSpace(r.URL.Query().Get("host")),
+		Active:     active,
+		Limit:      limit,
+		Offset:     offset,
+	})
 	if err != nil {
 		s.logger.Error("list policy rules", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to list rules")
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": rules})
+	s.writePaginated(w, rules, len(rules), limit, offset)
 }
 
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeAdmin(w, r) {
 		return
 	}
+	limit, offset, err := paginationParams(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	from, err := parseTimeParam(r, "from")
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	to, err := parseTimeParam(r, "to")
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	events, err := s.egress.ListAuditEvents(ctx)
+	events, err := s.egress.ListAuditEvents(ctx, service.ListAuditEventsOptions{
+		EventType: strings.TrimSpace(r.URL.Query().Get("event_type")),
+		ActorID:   strings.TrimSpace(r.URL.Query().Get("actor_id")),
+		From:      from,
+		To:        to,
+		Limit:     limit,
+		Offset:    offset,
+	})
 	if err != nil {
 		s.logger.Error("list audit events", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to list audit events")
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": events})
+	s.writePaginated(w, events, len(events), limit, offset)
 }
 
 func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +389,14 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	var body domain.CreatePolicyRuleBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	scopeForAuthz := body.Scope
+	if scopeForAuthz == "" {
+		scopeForAuthz = domain.RuleScopeOrg
+	}
+	if !s.currentPrincipal(r).CanCreateRule(scopeForAuthz) {
+		s.writeError(w, http.StatusForbidden, "not authorized to create a rule at this scope")
 		return
 	}
 
@@ -394,12 +459,19 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeAdmin(w, r) {
 		return
 	}
+	limit, offset, err := paginationParams(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	users, err := s.egress.ListUsers(ctx, service.ListUsersOptions{
 		Status: r.URL.Query().Get("status"),
+		Limit:  limit,
+		Offset: offset,
 	})
 	if err != nil {
 		var invalid domain.InvalidEnumError
@@ -412,7 +484,77 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": users})
+	s.writePaginated(w, users, len(users), limit, offset)
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	if !s.currentPrincipal(r).CanManageUsers() {
+		s.writeError(w, http.StatusForbidden, "not authorized to create users")
+		return
+	}
+
+	var body domain.CreateUserBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	user, err := s.egress.CreateUser(ctx, s.cfg.Identity.OrgID, body)
+	if err != nil {
+		var invalid domain.InvalidEnumError
+		if errors.As(err, &invalid) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.logger.Error("create user", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to create user")
+		return
+	}
+
+	s.writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	if !s.currentPrincipal(r).CanManageUsers() {
+		s.writeError(w, http.StatusForbidden, "not authorized to update users")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "user id is required")
+		return
+	}
+
+	var body domain.UpdateUserBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	user, err := s.egress.UpdateUser(ctx, id, body)
+	if err != nil {
+		var invalid domain.InvalidEnumError
+		if errors.As(err, &invalid) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, user)
 }
 
 func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +583,11 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeAdmin(w, r) {
 		return
 	}
+	limit, offset, err := paginationParams(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -448,6 +595,8 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	agents, err := s.egress.ListAgents(ctx, service.ListAgentsOptions{
 		UserID: r.URL.Query().Get("user_id"),
 		Status: r.URL.Query().Get("status"),
+		Limit:  limit,
+		Offset: offset,
 	})
 	if err != nil {
 		var invalid domain.InvalidEnumError
@@ -460,7 +609,50 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": agents})
+	s.writePaginated(w, agents, len(agents), limit, offset)
+}
+
+func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	var body domain.UpdateAgentBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	agent, err := s.egress.GetAgent(ctx, id)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+	if !s.currentPrincipal(r).CanManageAgent(agent.OwnerUserID) {
+		s.writeError(w, http.StatusForbidden, "not authorized to update this agent")
+		return
+	}
+
+	updated, err := s.egress.UpdateAgent(ctx, id, body)
+	if err != nil {
+		var invalid domain.InvalidEnumError
+		if errors.As(err, &invalid) {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.handleDirectoryError(w, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
@@ -636,7 +828,94 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
-	s.writeJSON(w, status, map[string]string{"error": message})
+	s.writeJSON(w, status, map[string]any{
+		"error": map[string]string{
+			"code":    errorCode(status),
+			"message": message,
+		},
+	})
+}
+
+func errorCode(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusProxyAuthRequired:
+		return "proxy_authentication_required"
+	case http.StatusNotImplemented:
+		return "not_implemented"
+	default:
+		return "internal_error"
+	}
+}
+
+// paginationParams parses limit/offset query params shared by every list
+// endpoint. Default 50, capped at 200, matching the store layer's own clamp.
+func paginationParams(r *http.Request) (limit, offset int, err error) {
+	limit = 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, convErr := strconv.Atoi(raw)
+		if convErr != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("limit must be a positive integer")
+		}
+		limit = parsed
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		parsed, convErr := strconv.Atoi(raw)
+		if convErr != nil || parsed < 0 {
+			return 0, 0, fmt.Errorf("offset must be a non-negative integer")
+		}
+		offset = parsed
+	}
+	return limit, offset, nil
+}
+
+// parseTimeParam parses an RFC3339 query parameter, returning nil if absent.
+func parseTimeParam(r *http.Request, name string) (*time.Time, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be RFC3339, got %q", name, raw)
+	}
+	return &parsed, nil
+}
+
+func (s *Server) writePaginated(w http.ResponseWriter, items any, count, limit, offset int) {
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"pagination": map[string]any{
+			"limit":    limit,
+			"offset":   offset,
+			"returned": count,
+		},
+	})
+}
+
+// currentPrincipal builds the control-plane caller's identity. Until Phase
+// 5.13 wires up real per-caller authentication, every request that passes
+// authorizeAdmin is treated as a single org-wide admin - but handlers call
+// through Principal's Can* methods rather than hardcoding that assumption,
+// so swapping in real multi-principal auth later won't require touching them.
+func (s *Server) currentPrincipal(r *http.Request) domain.Principal {
+	return domain.Principal{
+		ActorID: s.approverID(r),
+		OrgID:   s.cfg.Identity.OrgID,
+		Role:    domain.RoleAdmin,
+	}
 }
 
 func (s *Server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {

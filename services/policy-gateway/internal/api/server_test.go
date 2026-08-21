@@ -31,11 +31,11 @@ func (stubStore) ListRequests(_ context.Context, _ store.ListRequestsInput) ([]d
 	return []domain.EgressRequest{}, nil
 }
 
-func (stubStore) ListRules(_ context.Context) ([]domain.PolicyRule, error) {
+func (stubStore) ListRules(_ context.Context, _ store.ListRulesInput) ([]domain.PolicyRule, error) {
 	return []domain.PolicyRule{}, nil
 }
 
-func (stubStore) ListAuditEvents(_ context.Context) ([]domain.AuditEvent, error) {
+func (stubStore) ListAuditEvents(_ context.Context, _ store.ListAuditEventsInput) ([]domain.AuditEvent, error) {
 	return []domain.AuditEvent{}, nil
 }
 
@@ -168,6 +168,43 @@ func (s stubStore) GetAgentCredentialByHash(_ context.Context, _ string) (domain
 func (s stubStore) TouchAgentCredentialLastUsed(_ context.Context, _ string) error { return nil }
 
 func (s stubStore) TouchAgentLastSeen(_ context.Context, _ string) error { return nil }
+
+func (s stubStore) CreateUser(_ context.Context, in store.CreateUserInput) (domain.User, error) {
+	return domain.User{ID: "new-user-id", OrgID: in.OrgID, DisplayName: in.DisplayName, Role: in.Role, Status: "active"}, nil
+}
+
+func (s stubStore) UpdateUser(_ context.Context, id string, in store.UpdateUserInput) (domain.User, error) {
+	for _, u := range s.users {
+		if u.ID == id {
+			if in.DisplayName != nil {
+				u.DisplayName = *in.DisplayName
+			}
+			if in.Role != nil {
+				u.Role = *in.Role
+			}
+			if in.Status != nil {
+				u.Status = *in.Status
+			}
+			return u, nil
+		}
+	}
+	return domain.User{}, domain.ErrNotFound{Resource: "user", ID: id}
+}
+
+func (s stubStore) UpdateAgent(_ context.Context, id string, in store.UpdateAgentInput) (domain.Agent, error) {
+	for _, a := range s.agents {
+		if a.ID == id {
+			if in.Name != nil {
+				a.Name = *in.Name
+			}
+			if in.Metadata != nil {
+				a.Metadata = in.Metadata
+			}
+			return a, nil
+		}
+	}
+	return domain.Agent{}, domain.ErrNotFound{Resource: "agent", ID: id}
+}
 
 func TestHealthOK(t *testing.T) {
 	cfg := config.Config{
@@ -467,5 +504,153 @@ func TestRevokeAgentMarksRevoked(t *testing.T) {
 	}
 	if agent.Status != "revoked" {
 		t.Fatalf("status = %q, want revoked", agent.Status)
+	}
+}
+
+func TestCreateUser(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	body := `{"display_name":"Carol","email":"carol@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var user domain.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &user); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if user.DisplayName != "Carol" || user.Role != "member" {
+		t.Fatalf("unexpected user: %+v", user)
+	}
+}
+
+func TestCreateUserRequiresDisplayName(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(`{"display_name":""}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"bad_request"`) {
+		t.Fatalf("expected nested error envelope, got %s", rec.Body.String())
+	}
+}
+
+func TestUpdateUserDisablesUser(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/users/user-1", strings.NewReader(`{"status":"disabled"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var user domain.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &user); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if user.Status != "disabled" {
+		t.Fatalf("status = %q, want disabled", user.Status)
+	}
+}
+
+func TestUpdateUserNotFound(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/users/does-not-exist", strings.NewReader(`{"status":"disabled"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestUpdateAgentRenames(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/agents/agent-1", strings.NewReader(`{"name":"renamed"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var agent domain.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &agent); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if agent.Name != "renamed" {
+		t.Fatalf("name = %q, want renamed", agent.Name)
+	}
+}
+
+func TestUpdateAgentNotFound(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/agents/does-not-exist", strings.NewReader(`{"name":"x"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestListUsersIncludesPaginationEnvelope(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users?limit=1&offset=0", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var payload struct {
+		Items      []domain.User `json:"items"`
+		Pagination struct {
+			Limit    int `json:"limit"`
+			Offset   int `json:"offset"`
+			Returned int `json:"returned"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Pagination.Limit != 1 || payload.Pagination.Offset != 0 {
+		t.Fatalf("unexpected pagination: %+v", payload.Pagination)
+	}
+}
+
+func TestListRulesRejectsInvalidActiveParam(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/rules?active=maybe", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestPaginationRejectsInvalidLimit(t *testing.T) {
+	srv := newDirectoryTestServer(testDirectoryFixtures())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users?limit=-5", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }

@@ -76,6 +76,10 @@ func (f *fakeIdentityStore) GetAgentCredentialByHash(_ context.Context, tokenHas
 }
 func (f *fakeIdentityStore) TouchAgentCredentialLastUsed(context.Context, string) error { return nil }
 func (f *fakeIdentityStore) TouchAgentLastSeen(context.Context, string) error           { return nil }
+func (f *fakeIdentityStore) GetUser(_ context.Context, id string) (domain.User, error) {
+	return domain.User{ID: id, Status: "active"}, nil
+}
+
 func (f *fakeIdentityStore) GetOrganization(_ context.Context, id string) (domain.Organization, error) {
 	org, ok := f.orgs[id]
 	if !ok {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/config"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
@@ -24,42 +25,78 @@ type ListRequestsOptions struct {
 	Host    string
 	UserID  string
 	AgentID string
+	From    *time.Time
+	To      *time.Time
 	Limit   int
+	Offset  int
 }
 
 func (s *EgressService) ListRequests(ctx context.Context, opts ListRequestsOptions) ([]domain.EgressRequest, error) {
+	in := store.ListRequestsInput{
+		Host:    opts.Host,
+		UserID:  opts.UserID,
+		AgentID: opts.AgentID,
+		From:    opts.From,
+		To:      opts.To,
+		Limit:   opts.Limit,
+		Offset:  opts.Offset,
+	}
 	switch opts.Status {
 	case "":
-		return s.store.ListRequests(ctx, store.ListRequestsInput{
-			Host:    opts.Host,
-			UserID:  opts.UserID,
-			AgentID: opts.AgentID,
-			Limit:   opts.Limit,
-		})
+		return s.store.ListRequests(ctx, in)
 	case domain.RequestStatusPending,
 		domain.RequestStatusApproved,
 		domain.RequestStatusDenied,
 		domain.RequestStatusAutoApproved,
 		domain.RequestStatusExpired:
 		status := opts.Status
-		return s.store.ListRequests(ctx, store.ListRequestsInput{
-			Status:  &status,
-			Host:    opts.Host,
-			UserID:  opts.UserID,
-			AgentID: opts.AgentID,
-			Limit:   opts.Limit,
-		})
+		in.Status = &status
+		return s.store.ListRequests(ctx, in)
 	default:
 		return nil, domain.InvalidEnumError{Field: "status", Value: string(opts.Status)}
 	}
 }
 
-func (s *EgressService) ListRules(ctx context.Context) ([]domain.PolicyRule, error) {
-	return s.store.ListRules(ctx)
+type ListRulesOptions struct {
+	Scope      string
+	ScopeRefID string
+	Effect     string
+	Host       string
+	Active     *bool
+	Limit      int
+	Offset     int
 }
 
-func (s *EgressService) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error) {
-	return s.store.ListAuditEvents(ctx)
+func (s *EgressService) ListRules(ctx context.Context, opts ListRulesOptions) ([]domain.PolicyRule, error) {
+	return s.store.ListRules(ctx, store.ListRulesInput{
+		Scope:      opts.Scope,
+		ScopeRefID: opts.ScopeRefID,
+		Effect:     opts.Effect,
+		Host:       opts.Host,
+		Active:     opts.Active,
+		Limit:      opts.Limit,
+		Offset:     opts.Offset,
+	})
+}
+
+type ListAuditEventsOptions struct {
+	EventType string
+	ActorID   string
+	From      *time.Time
+	To        *time.Time
+	Limit     int
+	Offset    int
+}
+
+func (s *EgressService) ListAuditEvents(ctx context.Context, opts ListAuditEventsOptions) ([]domain.AuditEvent, error) {
+	return s.store.ListAuditEvents(ctx, store.ListAuditEventsInput{
+		EventType: opts.EventType,
+		ActorID:   opts.ActorID,
+		From:      opts.From,
+		To:        opts.To,
+		Limit:     opts.Limit,
+		Offset:    opts.Offset,
+	})
 }
 
 func (s *EgressService) RecordOutbound(
