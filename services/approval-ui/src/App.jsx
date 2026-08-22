@@ -38,7 +38,15 @@ export default function App() {
         setAuthenticated(ok)
       }
     }
-    load()
+    // fetchAuthConfig and probeAuthenticated both swallow their own errors
+    // today, so this cannot currently reject. The catch is here so that stays
+    // true if either is later changed: an unhandled rejection would leave the
+    // console with no auth config and no indication why.
+    load().catch(() => {
+      if (!cancelled) {
+        setAuthConfig({ mode: 'dev-token', dev_token_required: true })
+      }
+    })
     return () => {
       cancelled = true
     }

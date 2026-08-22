@@ -49,6 +49,13 @@ jobs:
         working-directory: services/policy-gateway
         run: go test ./... -count=1
 
+      # The race detector caught a real data race in a test fake that made two
+      # policycache tests flaky. Running it in CI is what stops that class of
+      # bug from coming back unnoticed.
+      - name: Race detector
+        working-directory: services/policy-gateway
+        run: go test -race ./... -count=1
+
       # The deterministic half of the security suite: SSRF classification,
       # redirect handling, secret hygiene, rate limiting, cross-tenant
       # isolation. These need no containers, so they gate every commit.

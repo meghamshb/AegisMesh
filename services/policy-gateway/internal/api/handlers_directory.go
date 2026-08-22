@@ -106,6 +106,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 	if !principal.CanManageUsers() {
 		s.writeError(w, http.StatusForbidden, "not authorized to update users")
 		return
@@ -224,6 +227,9 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		s.writeError(w, http.StatusBadRequest, "agent id is required")
@@ -304,6 +310,17 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Error("register agent: look up owner", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to register agent")
+		return
+	}
+
+	// Registering an agent hands back a working credential, so it is a
+	// credential-minting operation. A member may create an agent for
+	// themselves; creating one owned by somebody else is an admin/approver
+	// action. Without this a member could mint a live token attributed to
+	// another user - harmless while every caller was the same admin token,
+	// but real from Phase 5.13 onwards, where roles come from the directory.
+	if !principal.CanManageAgent(owner.ID) {
+		s.writeError(w, http.StatusForbidden, "not authorized to register an agent for this owner")
 		return
 	}
 
@@ -393,6 +410,20 @@ func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	// Look the agent up first so the ownership check has something to check
+	// against. Revocation is destructive and was the one agent mutation with
+	// no role gate, so a member could revoke any agent in the org while being
+	// unable to rename it.
+	existing, err := s.egress.GetAgent(ctx, principal.OrgID, id)
+	if err != nil {
+		s.handleDirectoryError(w, err)
+		return
+	}
+	if !principal.CanManageAgent(existing.OwnerUserID) {
+		s.writeError(w, http.StatusForbidden, "not authorized to revoke this agent")
+		return
+	}
 
 	agent, err := s.identity.RevokeAgent(ctx, principal.OrgID, id, principal.ActorID)
 	if err != nil {

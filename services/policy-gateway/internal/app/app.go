@@ -43,7 +43,7 @@ func NewDistributed(cfg config.Config, logger *slog.Logger, st store.Store, snap
 
 func newApp(cfg config.Config, logger *slog.Logger, st store.Store, engine policy.Engine) *App {
 	egress := service.NewEgress(st, engine)
-	identitySvc := identity.NewService(st)
+	identitySvc := identity.NewService(st).WithLogger(logger)
 	return &App{
 		cfg:    cfg,
 		logger: logger,

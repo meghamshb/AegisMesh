@@ -124,8 +124,27 @@ func (c *CachedClient) Authenticate(ctx context.Context, tokenHash string) (conf
 		return config.AgentIdentity{}, err
 	}
 
+	now := time.Now()
 	c.mu.Lock()
-	c.cache[tokenHash] = cacheEntry{identity: id, expiresAt: time.Now().Add(c.ttl)}
+	// Evict expired entries before inserting. Only successful authentications
+	// are cached, so the key space is bounded by the number of valid
+	// credentials - but every rotation mints a new hash, and without this the
+	// old entry would sit in the map for the lifetime of the process. Cheap to
+	// do here because it only runs on a cache miss.
+	for hash, entry := range c.cache {
+		if now.After(entry.expiresAt) {
+			delete(c.cache, hash)
+		}
+	}
+	c.cache[tokenHash] = cacheEntry{identity: id, expiresAt: now.Add(c.ttl)}
 	c.mu.Unlock()
 	return id, nil
+}
+
+// CacheSize reports how many entries the cache currently holds. Exported for
+// tests that assert eviction actually happens.
+func (c *CachedClient) CacheSize() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.cache)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/domain"
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/store"
@@ -47,11 +48,21 @@ type Store interface {
 // Service owns agent registration and the agent credential lifecycle:
 // issuing, rotating, revoking, and authenticating opaque agent tokens.
 type Service struct {
-	store Store
+	store  Store
+	logger *slog.Logger
 }
 
 func NewService(st Store) *Service {
-	return &Service{store: st}
+	return &Service{store: st, logger: slog.Default()}
+}
+
+// WithLogger attaches a logger. Optional so NewService keeps its signature;
+// without it, bookkeeping failures still go somewhere rather than vanishing.
+func (s *Service) WithLogger(l *slog.Logger) *Service {
+	if l != nil {
+		s.logger = l
+	}
+	return s
 }
 
 type RegisterAgentInput struct {
@@ -220,11 +231,20 @@ func (s *Service) AuthenticateAgentTokenHash(ctx context.Context, tokenHash stri
 		return AuthenticatedAgent{}, ErrOrgSuspended
 	}
 
+	// last_used_at and last_seen_at are display-only: nothing reads them for a
+	// decision. Failing authentication because a timestamp could not be
+	// written would take every agent offline over a degraded write path - a
+	// read-only replica or a full disk - while the credential itself is
+	// perfectly valid and policy is still evaluable. The authentication
+	// decision is already made by this point, so record the failure and
+	// proceed.
 	if err := s.store.TouchAgentCredentialLastUsed(ctx, cred.ID); err != nil {
-		return AuthenticatedAgent{}, fmt.Errorf("touch agent credential: %w", err)
+		s.logger.Warn("could not record credential last_used_at; continuing",
+			"credential_id", cred.ID, "error", err)
 	}
 	if err := s.store.TouchAgentLastSeen(ctx, agent.ID); err != nil {
-		return AuthenticatedAgent{}, fmt.Errorf("touch agent last_seen_at: %w", err)
+		s.logger.Warn("could not record agent last_seen_at; continuing",
+			"agent_id", agent.ID, "error", err)
 	}
 
 	return AuthenticatedAgent{

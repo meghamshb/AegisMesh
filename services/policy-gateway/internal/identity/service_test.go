@@ -3,6 +3,8 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strconv"
 	"testing"
 
@@ -275,5 +277,67 @@ func TestAuthenticateAgentTokenOwnerDisabled(t *testing.T) {
 
 	if _, err := svc.AuthenticateAgentToken(context.Background(), token); !errors.Is(err, identity.ErrOwnerDisabled) {
 		t.Fatalf("error = %v, want ErrOwnerDisabled", err)
+	}
+}
+
+// last_used_at and last_seen_at are display-only - nothing reads them for a
+// decision. A failure to write them must not take an agent offline: a
+// read-only replica or a full disk would otherwise stop all egress while the
+// credential is perfectly valid and policy is still evaluable.
+type touchFailingStore struct {
+	*fakeStore
+	touchErr error
+}
+
+func (f *touchFailingStore) TouchAgentCredentialLastUsed(context.Context, string) error {
+	return f.touchErr
+}
+
+func (f *touchFailingStore) TouchAgentLastSeen(context.Context, string) error {
+	return f.touchErr
+}
+
+func TestBookkeepingFailureDoesNotBreakAuthentication(t *testing.T) {
+	base := newFakeStore()
+	st := &touchFailingStore{fakeStore: base, touchErr: errors.New("read-only transaction")}
+	svc := identity.NewService(st).WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	agent, token, _, err := svc.RegisterAgent(context.Background(), identity.RegisterAgentInput{
+		OrgID:       "org-1",
+		OwnerUserID: "user-1",
+		Name:        "bookkeeping-agent",
+	}, "admin-1")
+	if err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+
+	authed, err := svc.AuthenticateAgentToken(context.Background(), token)
+	if err != nil {
+		t.Fatalf("authentication failed because a timestamp could not be written: %v", err)
+	}
+	if authed.AgentID != agent.ID {
+		t.Fatalf("AgentID = %q, want %q", authed.AgentID, agent.ID)
+	}
+}
+
+// A genuinely revoked credential must still be refused - the change above
+// relaxes bookkeeping, not the security checks around it.
+func TestRevokedCredentialStillRefusedWhenBookkeepingFails(t *testing.T) {
+	base := newFakeStore()
+	st := &touchFailingStore{fakeStore: base, touchErr: errors.New("read-only transaction")}
+	svc := identity.NewService(st).WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	agent, token, _, err := svc.RegisterAgent(context.Background(), identity.RegisterAgentInput{
+		OrgID: "org-1", OwnerUserID: "user-1", Name: "to-revoke",
+	}, "admin-1")
+	if err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	if _, err := svc.RevokeAgent(context.Background(), agent.OrgID, agent.ID, "admin-1"); err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+
+	if _, err := svc.AuthenticateAgentToken(context.Background(), token); err == nil {
+		t.Fatal("a revoked credential authenticated successfully")
 	}
 }

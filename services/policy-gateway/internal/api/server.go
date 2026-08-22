@@ -220,12 +220,6 @@ func (s *Server) devTokenPrincipal(r *http.Request) domain.Principal {
 	}
 }
 
-// currentPrincipal is retained for callers that only need the shape of the
-// caller rather than a full authentication decision.
-func (s *Server) currentPrincipal(r *http.Request) domain.Principal {
-	return s.devTokenPrincipal(r)
-}
-
 func bearerToken(r *http.Request) string {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(strings.ToLower(header), "bearer ") {

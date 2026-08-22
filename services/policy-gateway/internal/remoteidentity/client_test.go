@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -134,5 +135,32 @@ func TestCachedClientExpiresAfterTTL(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("expected a second upstream call after TTL expiry, got %d calls", calls.Load())
+	}
+}
+
+// Only successful authentications are cached, so the key space is bounded by
+// valid credentials - but each rotation mints a new hash, and an entry that is
+// never evicted is a slow leak in a long-running gateway.
+func TestCacheEvictsExpiredEntries(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"agent_id":"a","user_id":"u","org_id":"o"}`))
+	}))
+	defer srv.Close()
+
+	// A TTL that has already elapsed by the time the next call happens.
+	cached := remoteidentity.NewCachedClient(
+		remoteidentity.NewClient(srv.URL, "clr_gateway_test"), time.Nanosecond)
+
+	for i := 0; i < 50; i++ {
+		if _, err := cached.Authenticate(context.Background(), fmt.Sprintf("hash-%d", i)); err != nil {
+			t.Fatalf("Authenticate: %v", err)
+		}
+	}
+
+	if got := cached.CacheSize(); got > 2 {
+		t.Fatalf("cache holds %d entries after 50 rotations; expired entries are not evicted", got)
 	}
 }

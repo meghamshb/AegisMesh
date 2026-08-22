@@ -60,6 +60,9 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 
 	var body domain.CreatePolicyRuleBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -116,6 +119,9 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {
+		return
+	}
+	if !s.allowMutation(w, r) {
 		return
 	}
 	if !principal.CanRevokeRule() {

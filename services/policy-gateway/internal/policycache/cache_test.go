@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,7 +14,12 @@ import (
 	"github.com/meghamshb2006/clearance/services/policy-gateway/internal/policycache"
 )
 
+// fakeFetcher is read by the cache's background refresh goroutine while the
+// test goroutine mutates it, so every field needs a lock. Without one the race
+// detector flags these tests and, worse, the behaviour under test becomes
+// timing-dependent.
 type fakeFetcher struct {
+	mu       sync.Mutex
 	snapshot domain.PolicySnapshot
 	err      error
 	calls    atomic.Int64
@@ -21,10 +27,27 @@ type fakeFetcher struct {
 
 func (f *fakeFetcher) FetchSnapshot(context.Context) (domain.PolicySnapshot, error) {
 	f.calls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return domain.PolicySnapshot{}, f.err
 	}
 	return f.snapshot, nil
+}
+
+// setSnapshot and setErr are how a test changes what the control plane would
+// return mid-run.
+func (f *fakeFetcher) setSnapshot(s domain.PolicySnapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshot = s
+	f.err = nil
+}
+
+func (f *fakeFetcher) setErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
 }
 
 func testLogger() *slog.Logger {
@@ -88,7 +111,7 @@ func TestRefreshUpdatesSnapshot(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	fetcher.snapshot = domain.PolicySnapshot{Version: 2, Rules: []domain.PolicyRule{{ID: "v2"}}}
+	fetcher.setSnapshot(domain.PolicySnapshot{Version: 2, Rules: []domain.PolicyRule{{ID: "v2"}}})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -137,7 +160,7 @@ func TestRefreshFailureKeepsLastKnownGood(t *testing.T) {
 	}
 
 	// Control plane becomes unreachable; refresh attempts will fail from here on.
-	fetcher.err = errors.New("temporarily unreachable")
+	fetcher.setErr(errors.New("temporarily unreachable"))
 	time.Sleep(50 * time.Millisecond)
 
 	rules, ok := cache.Rules()

@@ -216,3 +216,101 @@ func TestOIDCMemberRoleIsEnforcedByHandlers(t *testing.T) {
 func contains(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
+
+// Audit finding: agent registration and revocation had no ownership check.
+//
+// Both were unreachable while every caller authenticated as the same admin
+// token. Phase 5.13 made roles genuinely per-caller, which made them live: a
+// member could mint a working credential attributed to somebody else, and
+// could revoke any agent in the org.
+
+func memberServer(t *testing.T, st stubStore) *api.Server {
+	t.Helper()
+	external := "https://idp.example#bob"
+	dir := &oidcDirectory{users: map[string]domain.User{
+		external: {ID: "user-2", OrgID: "org-1", Role: domain.RoleMember, Status: "active"},
+	}}
+	resolver := auth.NewResolver(
+		fixedVerifier{claims: auth.Claims{Issuer: "https://idp.example", Subject: "bob"}},
+		dir, true)
+	return oidcServer(t, st, resolver)
+}
+
+func memberAuth() map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer good-token",
+		"Content-Type":  "application/json",
+	}
+}
+
+// Registration returns a live credential, so creating an agent owned by
+// someone else is credential minting on their behalf.
+func TestMemberCannotRegisterAnAgentForAnotherUser(t *testing.T) {
+	srv := memberServer(t, testDirectoryFixtures())
+
+	// user-1 is Alice; the caller is user-2.
+	rec := send(srv, http.MethodPost, "/api/v1/agents", memberAuth(),
+		`{"owner_user_id":"user-1","name":"not-mine"}`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: a member must not mint a credential for another user (body=%s)",
+			rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "clr_agent_") {
+		t.Fatalf("a credential was issued despite the refusal: %s", rec.Body.String())
+	}
+}
+
+// Revocation is destructive and was the one agent mutation with no role gate.
+func TestMemberCannotRevokeAnotherUsersAgent(t *testing.T) {
+	srv := memberServer(t, testDirectoryFixtures())
+
+	// agent-1 belongs to user-1 (Alice); the caller is user-2.
+	rec := send(srv, http.MethodPost, "/api/v1/agents/agent-1/revoke", memberAuth(), "")
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: a member must not revoke another user's agent (body=%s)",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// The checks must gate on ownership, not deny members outright - otherwise
+// they are a blanket refusal rather than an authorization rule.
+func TestAdminCanStillRegisterAndRevokeAgents(t *testing.T) {
+	external := "https://idp.example#alice"
+	dir := &oidcDirectory{users: map[string]domain.User{
+		external: {ID: "user-1", OrgID: "org-1", Role: domain.RoleAdmin, Status: "active"},
+	}}
+	resolver := auth.NewResolver(
+		fixedVerifier{claims: auth.Claims{Issuer: "https://idp.example", Subject: "alice"}},
+		dir, true)
+	srv := oidcServer(t, testDirectoryFixtures(), resolver)
+
+	rec := send(srv, http.MethodPost, "/api/v1/agents", memberAuth(),
+		`{"owner_user_id":"user-1","name":"mine"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("admin register: status = %d, want 201 (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	rec = send(srv, http.MethodPost, "/api/v1/agents/agent-1/revoke", memberAuth(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin revoke: status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// A member registering an agent for themselves is legitimate.
+func TestMemberCanRegisterTheirOwnAgent(t *testing.T) {
+	st := testDirectoryFixtures()
+	st.users = append(st.users, domain.User{
+		ID: "user-2", OrgID: "org-1", DisplayName: "Bob", Role: domain.RoleMember, Status: "active",
+	})
+	srv := memberServer(t, st)
+
+	rec := send(srv, http.MethodPost, "/api/v1/agents", memberAuth(),
+		`{"owner_user_id":"user-2","name":"my-laptop"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: a member may create their own agent (body=%s)",
+			rec.Code, rec.Body.String())
+	}
+}

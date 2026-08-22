@@ -1566,6 +1566,87 @@ listener, with a TLS 1.2 floor. Two deliberate behaviours:
 
 ---
 
+## Codebase audit findings
+
+A systematic pass over the whole codebase: race detector, resource lifecycles,
+SQL scan/parameter arity, authorization coverage, error handling, and the UI.
+Everything below was found and fixed.
+
+### Authorization gaps (the significant ones)
+
+Both were **unreachable before Phase 5.13**, because every control-plane caller
+authenticated as the same admin token. Making roles genuinely per-caller made
+them live — a good illustration that adding real identity turns latent
+authorization gaps into reachable ones.
+
+| Handler | Gap | Impact |
+|---|---|---|
+| `handleRegisterAgent` | No ownership check on `owner_user_id` | A `member` could register an agent owned by another user — and registration **returns a live credential**, so this minted a working token attributed to someone else |
+| `handleRevokeAgent` | No ownership check at all | A `member` could revoke *any* agent in the org, while being unable to rename it |
+
+Both now call `Principal.CanManageAgent`. Verified non-vacuous by disabling the
+checks and observing a real `clr_agent_` token issued for another user, and
+another user's agent revoked.
+
+Revocation was the only agent mutation without a role gate — `handleUpdateAgent`
+and `handleRotateAgentCredential` both already had one. That inconsistency is
+what surfaced it, which is an argument for auditing guard coverage as a table
+rather than per-handler.
+
+### Availability: bookkeeping on the critical path
+
+`AuthenticateAgentTokenHash` treated failures to write `last_used_at` and
+`last_seen_at` as fatal. Those columns are display-only — nothing reads them
+for a decision — so a degraded write path (read-only replica, full disk) would
+have stopped **all agent egress** while credentials were valid and policy was
+still evaluable. They are now logged and skipped; the authentication decision
+is already made by that point. A revoked credential is still refused.
+
+### Data race
+
+`policycache`'s test fake was mutated by the test goroutine while the
+background refresh goroutine read it, making two tests flaky. Production
+`Cache` was correctly locked throughout. The fake now locks, and **the race
+detector runs in CI** so this class does not return silently.
+
+### Unbounded growth
+
+`remoteidentity.CachedClient` never evicted expired entries. Only successful
+authentications are cached, so the key space is bounded by valid credentials —
+but every credential rotation mints a new hash, leaving the old entry for the
+life of the process. Expired entries are now evicted on insert, matching what
+the rate limiter already did.
+
+### Consistency and hygiene
+
+- `allowMutation` was missing from `handleUpdateUser` (role escalation and
+  account disable), `handleUpdateAgent`, `handleCreateRule`, and
+  `handleDeleteRule`. All are privileged; all are now rate-limited.
+- `currentPrincipal` was dead code after 5.13 and could have misled someone
+  into using the dev-token principal in OIDC mode. Removed.
+- The console's auth-discovery effect had no `.catch()`. Its callees swallow
+  their own errors today, so it could not reject — but that is the fragile
+  shape that produced an unhandled rejection back in Phase 5.7.
+
+### Checked and clean
+
+Worth recording so the same ground is not re-covered:
+
+- **SQL arity** — every `$N` placeholder has an argument, and every
+  `SELECT`/`RETURNING` column list matches its scan destinations (checked
+  mechanically, including through the shared scan helpers).
+- **Resource lifecycles** — all `pool.Query` calls have `defer rows.Close()`;
+  all HTTP response bodies are closed; every background goroutine honours
+  `ctx.Done()`.
+- **CONNECT tunnel** — the buffered `errCh` plus deferred closes mean the
+  sibling `io.Copy` always unwinds; no goroutine leak.
+- **`approverID`** — the `X-Gateway-Approver` header feeds only the dev-token
+  principal. It cannot influence attribution in OIDC mode.
+- No unchecked type assertions, no truncating numeric conversions, no
+  swallowed errors in production paths.
+
+---
+
 ## Document history
 
 | Date | Change |
