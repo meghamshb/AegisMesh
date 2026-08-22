@@ -12,12 +12,18 @@ const (
 	defaultListenAddr        = ":8080"
 	defaultGatewayListenAddr = ":8081"
 	defaultServiceName       = "policy-gateway"
-	defaultServiceVer        = "0.6.1-phase4"
-	defaultPostgresDSN       = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
-	defaultReadTimeout       = 15 * time.Second
-	defaultWriteTimeout      = 15 * time.Second
-	defaultIdleTimeout       = 60 * time.Second
-	defaultShutdownGrace     = 10 * time.Second
+	// v0.9.0, not 1.0.0. Phase 5.14.6 says not to claim production-ready
+	// unless TLS, OIDC, and the security evaluation are genuinely complete.
+	// All three exist now, but each carries a real caveat: the OIDC seam has
+	// never been exercised against a live identity provider, TLS is a listener
+	// option with no certificate lifecycle around it, and the evaluation
+	// documents its own gaps. "preview" is the honest label.
+	defaultServiceVer    = "0.9.0-multi-user-preview"
+	defaultPostgresDSN   = "postgres://hermes:hermes@postgres:5432/hermes_policy?sslmode=disable"
+	defaultReadTimeout   = 15 * time.Second
+	defaultWriteTimeout  = 15 * time.Second
+	defaultIdleTimeout   = 60 * time.Second
+	defaultShutdownGrace = 10 * time.Second
 
 	defaultOrgID   = "11111111-1111-1111-1111-111111111010"
 	defaultUserID  = "11111111-1111-1111-1111-111111111001"

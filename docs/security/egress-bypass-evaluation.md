@@ -6,9 +6,9 @@
   Every number below is computed from measured test results.
 -->
 
-- **Generated:** 2026-08-22 04:28 UTC
-- **Commit:** `94a1340`
-- **Gateway version:** `dev`
+- **Generated:** 2026-08-22 04:41 UTC
+- **Commit:** `d73186c`
+- **Gateway version:** `0.9.0-multi-user-preview`
 - **Harness:** `scripts/security/run-evaluation.sh`
 
 ## Measured result

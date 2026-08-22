@@ -30,7 +30,7 @@ handoff: true
 
 **Conflict resolution:** If the user’s latest message conflicts with **Strategic decisions** or **Non-goals**, follow this file and ask for clarification.
 
-**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[clearance](https://github.com/meghamshb2006/clearance)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.6.1-phase4` (see `GATEWAY_SERVICE_VERSION`).
+**Repo note:** Spec lives at `docs/specs/hermes-policy-gateway.md` in **[clearance](https://github.com/meghamshb2006/clearance)**. Implementation is under `services/policy-gateway/` with Compose at repo root. Gateway version: `0.9.0-multi-user-preview` (see `GATEWAY_SERVICE_VERSION`).
 
 ---
 
@@ -682,7 +682,9 @@ Hermes needs LLM access. Options:
 | 5.11 Security hardening | **Done** | SSRF-to-control-plane fix, rate limits, credential hygiene, cross-tenant tests |
 | 5.12 Security evaluation suite | **Done** | `scripts/security/`, generated evaluation report, CI |
 | 5.13 Production-auth seam | **Done** | `CLEARANCE_AUTH_MODE=dev-token\|oidc`, OIDC verification, external-subject mapping |
-| 5.14 Final demo, docs, release | **Not started** | |
+| 5.13a Rebinding + TLS | **Done** | Resolve-and-pin dialing; `CLEARANCE_TLS_CERT_FILE`/`KEY_FILE` |
+| 5.13b Codebase audit | **Done** | Two authz gaps, an availability bug, a data race, an unbounded cache |
+| 5.14 Final demo, docs, release | **Done** | Architecture doc, threat model, four runbooks, `v0.9.0-multi-user-preview` |
 
 Verify: `make smoke` from repo root (requires running stack).
 

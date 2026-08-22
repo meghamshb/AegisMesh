@@ -509,7 +509,11 @@ echo
 echo "▸ Generating ${DOC}"
 # ---------------------------------------------------------------------------
 mkdir -p "$(dirname "$DOC")"
-GATEWAY_VERSION="$($COMPOSE exec -T gateway-a sh -c 'echo ${GATEWAY_SERVICE_VERSION:-dev}' 2>/dev/null | tr -d '\r' || echo dev)"
+# Read the version the service actually reports rather than an env var that
+# may not be set - the report should record what was tested, not a default.
+GATEWAY_VERSION="$(docker run --rm --network "$AGENT_NET" "$CURL_IMAGE" \
+  -fsS --max-time 5 "${GATEWAY}/health" 2>/dev/null |
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("version","unknown"))' 2>/dev/null || echo unknown)"
 python3 scripts/security/render-report.py \
   --results "$RESULTS_TSV" \
   --output "$DOC" \
